@@ -30,8 +30,9 @@ cd Iconic-Chargers
 open web/index.html          # macOS · or just double-click the file
 ```
 
-No `npm`, no bundler, no server. One HTML file plus a generated data file; Leaflet and the basemap
-tiles come from a CDN, so it needs a network connection and nothing else.
+No `npm`, no bundler, no server. One HTML file, a generated data file, and a vendored copy of
+Leaflet. Only the basemap tiles come off the network, so everything but the map imagery works
+offline.
 
 Prefer a server? `python3 -m http.server 8731` → <http://127.0.0.1:8731/web/index.html>.
 
@@ -87,6 +88,47 @@ an antique gold.
 <img src="docs/screenshot-detail.png" alt="The Great Barrier Reef badge lighting all nine of its Queensland Superchargers" width="88%">
 </div>
 
+### Speed
+
+`node scripts/bench.mjs` drives a real drag and wheel-zoom over CDP and reports frame times, tile
+counts and load cost. It throttles the CPU 6× by default, because unthrottled on a fast Mac every
+interaction already sits at the renderer's ceiling and the run reports no jank whatever the code
+does.
+
+Measured at 6× CPU on a simulated 4G connection, against a compressing server:
+
+| | before | after |
+|---|--:|--:|
+| First contentful paint | 240 ms | **132 ms** |
+| Leaflet ready (map can start) | 254 ms | **147 ms** |
+| DOM ready | 309 ms | **182 ms** |
+| Origins contacted | 6 | **2** |
+| Tiles for one badge flight | 230 | **77** |
+| Main thread blocked per keystroke | 22.6 ms | **0.5 ms** |
+
+What did it:
+
+- **Leaflet is vendored, not CDN-loaded.** Browsers partition the HTTP cache by site, so a shared
+  CDN copy is never reused across sites — the third-party origin bought nothing and cost a DNS + TLS
+  round trip that blocked map init. Both files are byte-identical to unpkg's `leaflet@1.9.4`.
+- **`{s}` tile sharding removed, one `preconnect` added.** `a`–`d.basemaps.cartocdn.com` are one
+  Fastly host behind a wildcard cert, so the browser coalesced them onto a single HTTP/2 connection
+  anyway; the shards only ever cost three extra DNS lookups and split the preconnect four ways.
+- **`updateWhenZooming: false`.** Flying to a badge crossed every zoom level en route and requested
+  a full screen of tiles at each — 230 tiles to show one site, discarded before they could be seen.
+- **The map is no longer rebuilt on every keystroke.** Search used to `clearLayers()` and re-add all
+  53 markers, destroying and recreating their DOM even when the results were identical; the sidebar
+  was re-parsed from `innerHTML` at the same time. Both now update only what changed, coalesced to
+  one render per frame.
+
+**Frame rate was never the problem** — drag and zoom dropped zero frames before this work and drop
+zero after. The wins above are all in load time and wasted network, not rendering.
+
+Two changes were tried, measured, and reverted rather than shipped: continuous zoom (`zoomSnap: 0`)
+made a wheel notch move a fifth of a level instead of a whole one, and — since these are raster
+tiles — left the basemap a scaled bitmap whenever it sat between levels; and a larger `keepBuffer`
+changed nothing, because it governs which loaded tiles are *retained*, not which are fetched ahead.
+
 ---
 
 ## The badges
@@ -121,9 +163,11 @@ Victoria Harbour
 |---|---|
 | [`web/index.html`](web/index.html) | The map. The entire app. |
 | `web/sites.js` | Generated data for the map — don't hand-edit. |
+| `web/vendor/` | Leaflet 1.9.4, unmodified. |
 | [`ICONIC-CHARGERS.md`](ICONIC-CHARGERS.md) | Every badge, its Superchargers, coordinates. |
 | [`data/iconic-badges.json`](data/iconic-badges.json) | Machine-readable: `badges[]` and `sites[]`. |
 | [`scripts/build_iconic.py`](scripts/build_iconic.py) | Generates all three from one `BADGES` list. |
+| [`scripts/bench.mjs`](scripts/bench.mjs) | Frame times, tile counts and load cost, under throttling. |
 
 ### Regenerating
 

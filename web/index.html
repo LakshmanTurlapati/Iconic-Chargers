@@ -4,8 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tesla Iconic Charger badges — world map</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+
+<!-- Tiles are the long pole once the script is local, so open the connection
+     while the HTML is still parsing. Deliberately NO crossorigin: Leaflet
+     requests tiles as plain no-CORS <img>, and a CORS-mode preconnect would
+     sit unused while the browser opened a second connection anyway. -->
+<link rel="preconnect" href="https://basemaps.cartocdn.com">
+
+<!-- Vendored rather than CDN-loaded. Browsers partition the HTTP cache by
+     top-level site, so a shared CDN copy is never reused across sites -- the
+     third-party origin buys nothing and costs a DNS + TLS round trip that
+     blocks map init. Both files are byte-identical to unpkg's leaflet@1.9.4
+     (verified against the SRI hashes this page used to pin). -->
+<link rel="stylesheet" href="vendor/leaflet.css">
+<script defer src="vendor/leaflet.js"></script>
+<script defer src="sites.js"></script>
 <style>
   :root {
     color-scheme: dark;
@@ -97,6 +110,9 @@
     border: 0; border-left: 2px solid transparent;
     background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
   }
+  /* `display: grid` above outranks the UA's `[hidden] { display: none }`,
+     so filtered-out rows need this or they stay on screen. */
+  .item[hidden] { display: none; }
   .item:hover { background: #ffffff0d; }
   .item:focus-visible { outline: 2px solid var(--reason-flagship); outline-offset: -2px; }
   .item[aria-current="true"] { background: #ffffff14; border-left-color: var(--accent); }
@@ -231,11 +247,12 @@
 
 <div id="map"></div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-<script src="sites.js"></script>
 <script>
-(function () {
+// leaflet.js and sites.js are deferred from <head>, so they start downloading
+// during parse instead of being discovered down here. Deferred scripts run
+// after parsing but before DOMContentLoaded, so waiting on that event is what
+// keeps this inline block -- and the single-file app -- ordered behind them.
+document.addEventListener("DOMContentLoaded", function () {
   "use strict";
 
   var DATA = window.ICONIC;
@@ -262,16 +279,45 @@
   var query = "";
   var selected = null;
 
-  var map = L.map("map", { worldCopyJump: true, minZoom: 2, maxZoom: 17 });
+  var map = L.map("map", {
+    worldCopyJump: true, minZoom: 2, maxZoom: 17,
+    // Zoom stays snapped to whole levels. Continuous zoom (zoomSnap: 0) was
+    // tried and reverted for two measured reasons: a wheel notch moved only
+    // ~0.2 levels instead of a full one, so zooming felt sluggish, and these
+    // are raster tiles -- between two levels the basemap is a scaled bitmap,
+    // so a map that is usually mid-level is usually soft.
+    // Only the debounce is tightened, which starts the zoom sooner without
+    // changing where it lands.
+    wheelDebounceTime: 20
+  });
 
-  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+  // No {s} sharding: a/b/c/d are one Fastly host behind a *.basemaps wildcard
+  // cert, so the browser coalesces them onto a single HTTP/2 connection
+  // regardless. The shards only ever cost three extra DNS lookups, and they
+  // split the preconnect four ways.
+  L.tileLayer("https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
     attribution:
       '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
       '&copy; <a href="https://carto.com/attributions">CARTO</a> &middot; ' +
       'site data <a href="https://supercharge.info">supercharge.info</a>',
-    subdomains: "abcd",
-    maxZoom: 20
+    maxZoom: 20,
+    // Selecting a badge flies the map across many zoom levels. Without this,
+    // every level crossed en route requests a full screen of tiles that is
+    // discarded before it can be seen -- competing with the tiles at the
+    // destination, which are the only ones anybody looks at.
+    // (keepBuffer was tried at 3, 4 and 6 and left at its default: it governs
+    // which loaded tiles are *retained*, not which are fetched ahead, so it
+    // changed neither the tiles needed for a view nor the cost of a drag.)
+    updateWhenZooming: false
   }).addTo(map);
+
+  // Straight after the tile layer, before any marker or sidebar work: a map
+  // with no view requests no tiles, so this is the line that starts the
+  // network. Everything placed above it is latency added to the first paint.
+  map.fitBounds(
+    L.latLngBounds(DATA.sites.map(function (s) { return [s.latitude, s.longitude]; })),
+    { padding: [40, 40] }
+  );
 
 
   function esc(s) {
@@ -281,6 +327,9 @@
   }
   function place(s) {
     return [s.city, s.state, s.country].filter(Boolean).join(", ");
+  }
+  function text(el, s) {
+    if (el.textContent !== s) el.textContent = s;
   }
 
   function popupHTML(badge, s) {
@@ -352,7 +401,9 @@
       });
 
       marker.bindTooltip(esc(label), { className: "tip", direction: "top" });
-      marker.bindPopup(popupHTML(badge, s), { autoPanPadding: [30, 30] });
+      // Popup content as a function, not a string: Leaflet calls it on first
+      // open, so startup no longer builds 53 popups nobody has asked for.
+      marker.bindPopup(function () { return popupHTML(badge, s); }, { autoPanPadding: [30, 30] });
       marker.on("popupopen", function () { highlight(badge.badge); });
 
       return { marker: marker, site: s, badge: badge };
@@ -406,67 +457,119 @@
   document.getElementById("total").textContent =
     "· " + DATA.badge_count + " badges · " + DATA.site_count + " sites · " + DATA.snapshot_date;
 
+  // Search index, built once. Concatenating every badge's sites into a
+  // haystack on each keystroke was most of the per-key cost, and the strings
+  // never change.
+  var HAY = {};
+  BADGES.forEach(function (b) {
+    HAY[b.badge] = (
+      b.badge + " " + b.why + " " + b.region + " " +
+      sitesOf[b.badge].map(function (s) { return s.name + " " + place(s); }).join(" ")
+    ).toLowerCase();
+  });
+
   function visible() {
     var q = query.trim().toLowerCase();
     return BADGES.filter(function (b) {
       if (!active.has(b.region)) return false;
-      if (!q) return true;
-      var hay = b.badge + " " + b.why + " " + b.region + " " +
-        sitesOf[b.badge].map(function (s) { return s.name + " " + place(s); }).join(" ");
-      return hay.toLowerCase().indexOf(q) !== -1;
+      return !q || HAY[b.badge].indexOf(q) !== -1;
     });
   }
 
+  // The sidebar is built once and then shown/hidden. Re-parsing 40 rows of
+  // innerHTML on every keystroke was throwing away scroll position and
+  // selection state as well as the DOM.
+  var rowEl = {};      // badge name -> button
+  var headEl = {};     // region -> sticky header
+  var emptyEl = document.createElement("p");
+  emptyEl.className = "empty";
+  emptyEl.textContent = "No badges match that search.";
+  emptyEl.hidden = true;
+
+  REGIONS.forEach(function (region) {
+    var inRegion = BADGES.filter(function (b) { return b.region === region; });
+    if (!inRegion.length) return;
+    var h = document.createElement("div");
+    h.className = "region-head";
+    listEl.appendChild(h);
+    headEl[region] = h;
+
+    inRegion.forEach(function (b) {
+      var group = sitesOf[b.badge];
+      var sub = b.site_count > 1
+        ? b.site_count + " Superchargers · " + group[0].country
+        : group[0].name;
+      var el = document.createElement("button");
+      el.className = "item";
+      el.type = "button";
+      el.dataset.badge = b.badge;
+      el.style.setProperty("--accent", COLOR[b.reason]);
+      el.innerHTML =
+        '<span class="dot" style="background:' + COLOR[b.reason] + '"></span>' +
+        '<span><span class="nm">' + esc(b.badge) + "</span>" +
+        (b.confidence === "approx" ? '<span class="approx">approx</span>' : "") +
+        '<span class="sub">' + esc(sub) + "</span></span>" +
+        '<span class="tag">' + (b.site_count > 1 ? "×" + b.site_count : (group[0].stalls || "—")) + "</span>";
+      el.addEventListener("click", function () { select(b.badge, true); });
+      listEl.appendChild(el);
+      rowEl[b.badge] = el;
+    });
+  });
+  listEl.appendChild(emptyEl);
+
+  // Badge names currently on the map, so a render only touches the difference.
+  var shown = new Set();
+
   function render() {
     var rows = visible();
-    var keep = {};
-    rows.forEach(function (b) { keep[b.badge] = true; });
+    var want = new Set(rows.map(function (b) { return b.badge; }));
 
-    layer.clearLayers();
-    rows.forEach(function (b) {
-      marks[b.badge].forEach(function (m) { layer.addLayer(m.marker); });
-    });
-    if (selected && !keep[selected]) selected = null;
-
-    var siteTotal = rows.reduce(function (a, b) { return a + b.site_count; }, 0);
-    countEl.textContent = rows.length === BADGES.length
-      ? BADGES.length + " badges · " + DATA.site_count + " sites"
-      : rows.length + " of " + BADGES.length + " badges · " + siteTotal + " sites";
-
-    listEl.innerHTML = "";
-    if (!rows.length) {
-      listEl.innerHTML = '<p class="empty">No badges match that search.</p>';
-      return;
-    }
-    REGIONS.forEach(function (region) {
-      var inRegion = rows.filter(function (b) { return b.region === region; });
-      if (!inRegion.length) return;
-      var h = document.createElement("div");
-      h.className = "region-head";
-      h.textContent = region + " · " + inRegion.length;
-      listEl.appendChild(h);
-
-      inRegion.forEach(function (b) {
-        var group = sitesOf[b.badge];
-        var sub = b.site_count > 1
-          ? b.site_count + " Superchargers · " + group[0].country
-          : group[0].name;
-        var el = document.createElement("button");
-        el.className = "item";
-        el.type = "button";
-        el.dataset.badge = b.badge;
-        el.style.setProperty("--accent", COLOR[b.reason]);
-        if (selected === b.badge) el.setAttribute("aria-current", "true");
-        el.innerHTML =
-          '<span class="dot" style="background:' + COLOR[b.reason] + '"></span>' +
-          '<span><span class="nm">' + esc(b.badge) + "</span>" +
-          (b.confidence === "approx" ? '<span class="approx">approx</span>' : "") +
-          '<span class="sub">' + esc(sub) + "</span></span>" +
-          '<span class="tag">' + (b.site_count > 1 ? "×" + b.site_count : (group[0].stalls || "—")) + "</span>";
-        el.addEventListener("click", function () { select(b.badge, true); });
-        listEl.appendChild(el);
+    // Only add/remove what actually changed. clearLayers() followed by a full
+    // re-add destroyed and rebuilt all 53 marker elements on every keystroke,
+    // even when the result set was identical.
+    Object.keys(marks).forEach(function (name) {
+      var on = want.has(name);
+      if (on === shown.has(name)) return;
+      marks[name].forEach(function (m) {
+        if (on) { layer.addLayer(m.marker); } else { layer.removeLayer(m.marker); }
       });
+      if (on) { shown.add(name); } else { shown.delete(name); }
     });
+
+    // Filtering the selection away has to clear the row's aria-current too.
+    // The old code got this free by rebuilding every row; now the rows persist,
+    // so a dropped selection would otherwise leave a row announcing itself as
+    // current with no marker selected anywhere.
+    if (selected && !want.has(selected)) {
+      rowEl[selected].removeAttribute("aria-current");
+      selected = null;
+    }
+
+    // Writing textContent replaces the text node whether or not the string
+    // differs, so every unguarded write is a DOM mutation for nothing.
+    var siteTotal = rows.reduce(function (a, b) { return a + b.site_count; }, 0);
+    text(countEl, rows.length === BADGES.length
+      ? BADGES.length + " badges · " + DATA.site_count + " sites"
+      : rows.length + " of " + BADGES.length + " badges · " + siteTotal + " sites");
+
+    BADGES.forEach(function (b) { rowEl[b.badge].hidden = !want.has(b.badge); });
+    REGIONS.forEach(function (region) {
+      var h = headEl[region];
+      if (!h) return;
+      var n = 0;
+      BADGES.forEach(function (b) { if (b.region === region && want.has(b.badge)) n++; });
+      h.hidden = n === 0;
+      if (n) text(h, region + " · " + n);
+    });
+    emptyEl.hidden = rows.length > 0;
+  }
+
+  // Typing faster than the display refreshes should still cost one render.
+  var queued = false;
+  function scheduleRender() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(function () { queued = false; render(); });
   }
 
   function highlight(name) {
@@ -526,14 +629,10 @@
 
   document.getElementById("q").addEventListener("input", function (e) {
     query = e.target.value;
-    render();
+    scheduleRender();
   });
 
   render();
-  map.fitBounds(
-    L.latLngBounds(DATA.sites.map(function (s) { return [s.latitude, s.longitude]; })),
-    { padding: [40, 40] }
-  );
 
   // #<badge name> deep-links, so a specific badge is shareable.
   function openFromHash() {
@@ -542,7 +641,7 @@
   }
   window.addEventListener("hashchange", openFromHash);
   openFromHash();
-})();
+});
 </script>
 </body>
 </html>
