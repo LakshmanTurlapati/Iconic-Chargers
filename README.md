@@ -65,16 +65,21 @@ Whistler (2 each).
 
 | | |
 |---|---|
-| 🎨 **Colour** | why Tesla badges it — flagship · significance · destination |
-| ⭕ **Size** | stall count, by area |
+| 📍 **Pins** | styled after Tesla's own Supercharger marker — gold teardrop, dark bolt |
+| 🔢 **Stall count** | replaces the bolt once you zoom in, the way the Tesla app shows it |
 | 📋 **Sidebar** | lists **badges**, grouped by region, and doubles as the table view |
+| 🎨 **Colour in the list** | why Tesla badges it — flagship · significance · destination |
 | 🔗 **Multi-site** | selecting a badge frames **all** its Superchargers at once |
 | 🏷️ **Filter** | the four regions |
 | 🔎 **Search** | badge name, city, country, or anything in the write-up |
 | 🪪 **Deep links** | `web/index.html#Great%20Barrier%20Reef` |
 
+Pin colours are measured, not eyeballed: gold `#e8b923` sits at **9.35:1** over the basemap's water
+and **8.03:1** over its land, and the `#2c2c2a` bolt at **7.59:1** against the gold — all well past
+the 3:1 floor for meaningful graphics. Swap `--pin-gold` to `#d4af37` for an antique gold.
+
 <div align="center">
-<img src="docs/screenshot-detail.png" alt="The Great Barrier Reef badge, covering nine Queensland Superchargers" width="88%">
+<img src="docs/screenshot-detail.png" alt="The Great Barrier Reef badge lighting all nine of its Queensland Superchargers" width="88%">
 </div>
 
 ---

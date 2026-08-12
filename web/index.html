@@ -18,10 +18,17 @@
     --hairline:       #2c2c2a;
     --rule:           #383835;
     /* categorical slots 1-3, validated all-pairs against --surface-1
-       (CVD ΔE 9.4, normal-vision ΔE 20.9, all >= 3:1 contrast) */
+       (CVD ΔE 9.4, normal-vision ΔE 20.9, all >= 3:1 contrast).
+       These now identify a badge's reason in the LIST only - the map is one colour. */
     --reason-flagship:     #3987e5;
     --reason-significance: #d95926;
     --reason-destination:  #199e70;
+    /* Map pin, styled after Tesla's own Supercharger marker.
+       Gold on the dark basemap: 9.35:1 over water, 8.03:1 over land.
+       Bolt on gold: 7.59:1. Swap --pin-gold to #d4af37 for antique gold. */
+    --pin-gold: #e8b923;
+    --pin-bolt: #2c2c2a;
+    --pin-edge: #1b1b1b;
   }
 
   * { box-sizing: border-box; }
@@ -129,10 +136,39 @@
   .legend .row { display: flex; align-items: center; gap: 8px; }
   .legend .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
   .legend .sizes {
-    display: flex; align-items: flex-end; gap: 9px;
+    display: flex; align-items: center; gap: 9px;
     margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--hairline);
   }
-  .legend .sz { border: 2px solid var(--surface-1); border-radius: 50%; background: var(--text-muted); flex: none; }
+  .legend hr { margin: 9px 0; border: 0; border-top: 1px solid var(--hairline); }
+
+  /* ------------------------------------------------------- Supercharger pin */
+  /* Tip of the pin sits on the coordinate, so iconAnchor is bottom-centre. */
+  .pin { background: none; border: 0; }
+  .pin svg {
+    display: block;
+    overflow: visible;
+    transform-origin: 50% 100%;
+    transition: transform 90ms ease-out;
+  }
+  .pin .body { fill: var(--pin-gold); stroke: var(--pin-edge); stroke-width: 1.5; }
+  .pin .bolt { fill: var(--pin-bolt); }
+  .pin .count {
+    fill: var(--pin-bolt);
+    font: 600 10px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+    text-anchor: middle;
+    display: none;
+  }
+  /* Stall counts only once you are close enough for them not to be noise.
+     Scoped to marker icons - the legend's sample pin lives inside the same
+     container and must keep its bolt. */
+  .show-counts .leaflet-marker-icon.pin .bolt { display: none; }
+  .show-counts .leaflet-marker-icon.pin .count { display: block; }
+
+  .leaflet-marker-icon.pin:hover svg { transform: scale(1.12); }
+  .pin.is-selected svg {
+    transform: scale(1.15);
+    filter: drop-shadow(0 0 7px #e8b92399);
+  }
 
   .leaflet-tooltip.tip {
     padding: 5px 9px; border: 1px solid var(--rule); border-radius: 6px;
@@ -212,7 +248,6 @@
     significance: "Special significance",
     destination:  "Famous destination"
   };
-  var SURFACE = "#1b1b1b";
 
   var sitesOf = {};
   DATA.sites.forEach(function (s) {
@@ -234,7 +269,6 @@
     maxZoom: 20
   }).addTo(map);
 
-  function radius(stalls) { return 5 + Math.sqrt(stalls || 4) * 0.95; }
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -276,59 +310,78 @@
   }
 
   var layer = L.layerGroup().addTo(map);
-  var marks = {};   // badge name -> [{dot, halo, site}]
+  var marks = {};   // badge name -> [{marker, site, badge}]
+
+  // A Tesla-style Supercharger pin: gold teardrop, dark bolt, stall count in
+  // place of the bolt once zoomed in. Inline SVG in a divIcon keeps the page
+  // asset-free, and the 26x34 icon box is its own hit target - comfortably past
+  // the 24px minimum, so no separate halo layer is needed.
+  var PIN_W = 26, PIN_H = 34;
+
+  function pinIcon(stalls, label) {
+    // role="img" + <title> rather than the marker's alt option: Leaflet only
+    // applies alt to image icons, so a divIcon would otherwise be unnamed.
+    var svg =
+      '<svg width="' + PIN_W + '" height="' + PIN_H + '" viewBox="0 0 26 34" role="img">' +
+        "<title>" + esc(label) + "</title>" +
+        '<path class="body" d="M13 33.2C13 33.2 24.2 20.6 24.2 13A11.2 11.2 0 1 0 1.8 13' +
+          'C1.8 20.6 13 33.2 13 33.2Z"/>' +
+        '<path class="bolt" d="M14.6 5.6 8.2 14.1h4.1l-1.3 6.6 6.6-8.9h-4.2z"/>' +
+        '<text class="count" x="13" y="16.6">' + (stalls || "?") + "</text>" +
+      "</svg>";
+    return L.divIcon({
+      className: "pin",
+      html: svg,
+      iconSize: [PIN_W, PIN_H],
+      iconAnchor: [PIN_W / 2, PIN_H],   // the tip marks the coordinate
+      popupAnchor: [0, -PIN_H + 4],
+      tooltipAnchor: [0, -PIN_H + 6]
+    });
+  }
 
   BADGES.forEach(function (badge) {
     marks[badge.badge] = sitesOf[badge.badge].map(function (s) {
-      var color = COLOR[badge.reason];
-      var r = radius(s.stalls);
-
-      var dot = L.circleMarker([s.latitude, s.longitude], {
-        radius: r,
-        color: SURFACE,      // 2px surface ring keeps overlapping marks separable
-        weight: 2,
-        fillColor: color,
-        fillOpacity: 0.85,
-        interactive: false
-      });
-
-      // Separate, generous hit target — never make the reader hit a 10px dot.
-      var halo = L.circleMarker([s.latitude, s.longitude], {
-        radius: Math.max(r + 6, 13),
-        stroke: false,
-        fillColor: color,
-        fillOpacity: 0.01
-      });
-
       var label = badge.site_count > 1 ? badge.badge + " — " + s.name : badge.badge;
-      halo.bindTooltip(esc(label), { className: "tip", direction: "top", offset: [0, -4] });
-      halo.bindPopup(popupHTML(badge, s), { autoPanPadding: [30, 30] });
-      halo.on("popupopen", function () { highlight(badge.badge); });
-      halo.on("mouseover", function () { dot.setStyle({ fillOpacity: 1, weight: 3 }); });
-      halo.on("mouseout", function () {
-        if (selected !== badge.badge) dot.setStyle({ fillOpacity: 0.85, weight: 2 });
+      var marker = L.marker([s.latitude, s.longitude], {
+        icon: pinIcon(s.stalls, label + ", " + (s.stalls || "?") + " stalls"),
+        riseOnHover: true,
+        keyboard: true
       });
 
-      return { dot: dot, halo: halo, site: s, badge: badge };
+      marker.bindTooltip(esc(label), { className: "tip", direction: "top" });
+      marker.bindPopup(popupHTML(badge, s), { autoPanPadding: [30, 30] });
+      marker.on("popupopen", function () { highlight(badge.badge); });
+
+      return { marker: marker, site: s, badge: badge };
     });
   });
+
+  // Counts would be noise at world zoom; the bolt carries the meaning there.
+  function syncCounts() {
+    map.getContainer().classList.toggle("show-counts", map.getZoom() >= 6);
+  }
+  map.on("zoomend", syncCounts);
 
   var legend = L.control({ position: "bottomleft" });
   legend.onAdd = function () {
     var d = L.DomUtil.create("div", "legend");
     d.innerHTML =
-      "<b>Why Tesla badges it</b>" +
+      "<b>Map</b>" +
+      '<div class="sizes" style="margin-top:0;padding-top:0;border:0">' +
+        '<span class="pin" style="width:20px;height:26px">' +
+          '<svg width="20" height="26" viewBox="0 0 26 34">' +
+            '<path class="body" d="M13 33.2C13 33.2 24.2 20.6 24.2 13A11.2 11.2 0 1 0 1.8 13' +
+              'C1.8 20.6 13 33.2 13 33.2Z"/>' +
+            '<path class="bolt" d="M14.6 5.6 8.2 14.1h4.1l-1.3 6.6 6.6-8.9h-4.2z"/>' +
+          "</svg></span>" +
+        '<span style="color:var(--text-muted)">Iconic Charger site — zoom in for stall counts</span>' +
+      "</div><hr>" +
+      "<b>Colour in the list</b>" +
       ["flagship", "significance", "destination"].map(function (k) {
         var n = BADGES.filter(function (b) { return b.reason === k; }).length;
         return '<div class="row"><span class="dot" style="background:' + COLOR[k] + '"></span>' +
           REASON_LABEL[k] + ' <span style="color:var(--text-muted)">· ' + n + "</span></div>";
-      }).join("") +
-      '<div class="sizes">' +
-      [4, 40, 168].map(function (n) {
-        var px = Math.round(radius(n) * 2);
-        return '<span class="sz" style="width:' + px + "px;height:" + px + 'px"></span>';
-      }).join("") +
-      '<span style="color:var(--text-muted)">4 → 168 stalls</span></div>';
+      }).join("");
     L.DomEvent.disableClickPropagation(d);
     return d;
   };
@@ -378,7 +431,7 @@
 
     layer.clearLayers();
     rows.forEach(function (b) {
-      marks[b.badge].forEach(function (m) { layer.addLayer(m.dot); layer.addLayer(m.halo); });
+      marks[b.badge].forEach(function (m) { layer.addLayer(m.marker); });
     });
     if (selected && !keep[selected]) selected = null;
 
@@ -426,10 +479,11 @@
   function highlight(name) {
     selected = name;
     Object.keys(marks).forEach(function (k) {
+      var on = k === name;
       marks[k].forEach(function (m) {
-        m.dot.setStyle(k === name
-          ? { fillOpacity: 1, weight: 3 }
-          : { fillOpacity: 0.85, weight: 2 });
+        var el = m.marker.getElement();   // null while the marker is filtered out
+        if (el) el.classList.toggle("is-selected", on);
+        m.marker.setZIndexOffset(on ? 1000 : 0);
       });
     });
     listEl.querySelectorAll(".item").forEach(function (el) { el.removeAttribute("aria-current"); });
@@ -458,7 +512,7 @@
         map.setView([group[0].site.latitude, group[0].site.longitude],
                     Math.max(map.getZoom(), 9), { animate: false });
       }
-      group[0].halo.openPopup();   // opened last, so auto-pan can't cancel the flight
+      group[0].marker.openPopup();   // opened last, so auto-pan can't cancel the flight
     }
 
     if (document.hidden || group.length > 1) { land(); return; }
@@ -487,6 +541,7 @@
     L.latLngBounds(DATA.sites.map(function (s) { return [s.latitude, s.longitude]; })),
     { padding: [40, 40] }
   );
+  syncCounts();
 
   // #<badge name> deep-links, so a specific badge is shareable.
   function openFromHash() {
