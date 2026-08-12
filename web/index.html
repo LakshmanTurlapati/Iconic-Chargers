@@ -281,14 +281,16 @@ document.addEventListener("DOMContentLoaded", function () {
 
   var map = L.map("map", {
     worldCopyJump: true, minZoom: 2, maxZoom: 17,
-    // Zoom stays snapped to whole levels. Continuous zoom (zoomSnap: 0) was
-    // tried and reverted for two measured reasons: a wheel notch moved only
-    // ~0.2 levels instead of a full one, so zooming felt sluggish, and these
-    // are raster tiles -- between two levels the basemap is a scaled bitmap,
-    // so a map that is usually mid-level is usually soft.
-    // Only the debounce is tightened, which starts the zoom sooner without
-    // changing where it lands.
-    wheelDebounceTime: 20
+    // Left at the default deliberately: whole-level snapping is what keeps
+    // fitBounds/setView/flyTo landing on a crisp raster level. The wheel
+    // gesture below gets its smoothness without touching this -- see there.
+    zoomSnap: 1,
+    // Read by the wheel handler below, not by Leaflet's, which is off. On a
+    // retina Mac Leaflet reads a 120px notch as a delta of 20 (wheelPxFactor
+    // = 3 x devicePixelRatio), so 25 here is ~0.55 levels a notch: enough
+    // that one notch of a discrete mouse wheel settles a whole level.
+    wheelPxPerZoomLevel: 25,
+    scrollWheelZoom: false
   });
 
   // No {s} sharding: a/b/c/d are one Fastly host behind a *.basemaps wildcard
@@ -318,6 +320,114 @@ document.addEventListener("DOMContentLoaded", function () {
     L.latLngBounds(DATA.sites.map(function (s) { return [s.latitude, s.longitude]; })),
     { padding: [40, 40] }
   );
+
+  /* --------------------------------------------------------- wheel zoom ---
+     Leaflet's own wheel zoom is off (scrollWheelZoom: false) because it goes
+     through setView(), and setView() silently discards any zoom requested
+     while a previous one is still animating:
+
+       _tryAnimatedZoom(c, z, o) { if (!this._animatingZoom) { ...animate... }
+                                   return true }        // <- true regardless
+       setView: ... if (this._tryAnimatedZoom(...)) return this;   // dropped
+
+     The animation is a 250ms CSS transition, and _performZoom zeroes its
+     accumulated delta *before* the dropped call, so that motion is gone.
+     Measured on the old handler, six identical notches moved the map 1 level
+     at 30ms spacing, 2 at 60ms and 3 at 200ms -- the faster you scrolled, the
+     more input was thrown away. Whole-level snapping hid it: each surviving
+     notch jumped a full level, which is the "stepped" feel.
+
+     So drive the gesture the way Leaflet drives pinch-zoom (Map.TouchZoom):
+     a rAF loop calling map._move() directly. Three properties matter, all
+     from the vendored 1.9.4 source:
+
+       - _move() assigns `this._zoom = zoom` verbatim, with no _limitZoom.
+         The gesture can therefore be fractional while zoomSnap stays 1, so
+         every other view call in this file still lands on a whole level and
+         none of them needed changing.
+       - It never fires viewprereset. A non-animated setView() would, and
+         GridLayer binds viewprereset to _invalidateAll -- one notch would
+         drop every tile and rebuild the grid.
+       - Tagged {pinch: true} it takes the same path as a flight through
+         GridLayer._setView, so updateWhenZooming: false keeps holding and
+         the grid is transformed rather than refetched mid-gesture.
+
+     Private methods are used on purpose: Leaflet is vendored and pinned in
+     this repo, so they cannot drift underneath us. */
+  var WHEEL_EASE = 0.3;    // fraction of the remaining distance per frame
+  var WHEEL_IDLE = 180;    // ms of quiet that ends the gesture
+  var WHEEL_DEADZONE = 0.08;   // levels below which a gesture is a stray nudge
+  var wz = { on: false, from: 0, goal: 0, zoom: 0, anchor: null, at: null, frame: 0, timer: 0 };
+
+  // The centre that keeps `anchor` under the cursor at zoom z -- the same
+  // formulation TouchZoom uses for the pinch midpoint.
+  function wheelCenter(z) {
+    var off = wz.at.subtract(map.getSize().divideBy(2));
+    return map.unproject(map.project(wz.anchor, z).subtract(off), z);
+  }
+
+  function wheelFrame() {
+    var z = wz.zoom + (wz.goal - wz.zoom) * WHEEL_EASE;
+    if (Math.abs(wz.goal - z) < 0.002) z = wz.goal;
+    if (z !== wz.zoom) {
+      wz.zoom = z;
+      map._move(wheelCenter(z), z, { pinch: true });
+    }
+    wz.frame = requestAnimationFrame(wheelFrame);
+  }
+
+  function wheelEnd() {
+    if (!wz.on) return;
+    wz.on = false;
+    cancelAnimationFrame(wz.frame);
+    // _limitZoom is where zoomSnap finally applies, so the map comes to rest
+    // on a whole level and the raster tiles are crisp again. Settle on the
+    // goal rather than the rendered zoom: if rAF was throttled mid-gesture,
+    // the map should still finish where the wheel actually asked it to go.
+    var z = map._limitZoom(wz.goal);
+    // Rounding to nearest can land back where the gesture started -- one
+    // notch is only ~0.55 levels and a gentle trackpad drag is less. Scrolling
+    // and having nothing happen at all is worse than moving a level, so past
+    // a dead zone the gesture always commits one level in the direction it
+    // was already going.
+    var moved = wz.goal - wz.from;
+    if (z === wz.from && Math.abs(moved) > WHEEL_DEADZONE) {
+      z = map._limitZoom(wz.from + (moved > 0 ? 1 : -1));
+    }
+    map._animateZoom(wheelCenter(z), z, true, map.options.zoomSnap);
+  }
+
+  // passive: false -- this listener calls preventDefault, without which
+  // ctrl+wheel is the browser's own page zoom.
+  map.getContainer().addEventListener("wheel", function (e) {
+    e.preventDefault();
+    // Leaflet's own delta normalisation and its own response curve, applied
+    // per event instead of per debounced burst. Nothing device-specific is
+    // reimplemented here; the curve saturates at four levels so a single
+    // freak event cannot throw the map across the world.
+    var d = L.DomEvent.getWheelDelta(e) / (4 * map.options.wheelPxPerZoomLevel);
+    var levels = 4 * Math.log(2 / (1 + Math.exp(-Math.abs(d)))) / Math.LN2;
+    if (d < 0) levels = -levels;
+    if (!levels) return;                       // horizontal-only scroll
+
+    wz.at = map.mouseEventToContainerPoint(e);
+    if (!wz.on) {
+      map._stop();                                         // cancel a flight
+      if (map._animatingZoom) map._onZoomTransitionEnd();  // finish a button zoom
+      wz.on = true;
+      wz.from = wz.zoom = wz.goal = map.getZoom();
+      map._moveStart(true, false);
+      wz.frame = requestAnimationFrame(wheelFrame);
+    }
+    // Re-read each event so the zoom follows a cursor that moves mid-gesture.
+    wz.anchor = map.containerPointToLatLng(wz.at);
+    // Clamped rather than accumulated: otherwise ten notches past maxZoom
+    // would have to be scrolled back before the map moved at all.
+    wz.goal = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), wz.goal + levels));
+
+    clearTimeout(wz.timer);
+    wz.timer = setTimeout(wheelEnd, WHEEL_IDLE);
+  }, { passive: false });
 
 
   function esc(s) {

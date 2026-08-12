@@ -124,6 +124,35 @@ What did it:
 **Frame rate was never the problem** — drag and zoom dropped zero frames before this work and drop
 zero after. The wins above are all in load time and wasted network, not rendering.
 
+### Continuous zoom
+
+Wheel and trackpad zoom is continuous, and settles onto a whole zoom level when you stop.
+
+Leaflet's built-in wheel zoom is off, because it routes through `setView()` — and `setView()`
+silently discards any zoom requested while a previous one is still animating
+(`_tryAnimatedZoom` returns `true` whether or not it did anything, and `setView` reads that as
+"handled"). The animation is a 250 ms CSS transition, so the faster you scrolled the more input was
+thrown away: six identical notches moved the map **1 level at 30 ms spacing, 2 at 60 ms and 3 at
+200 ms**. Whole-level snapping hid the loss, since each surviving notch jumped a full level — which
+is exactly what "stepped" felt like.
+
+In its place is a handler shaped like Leaflet's own pinch-zoom, driving `map._move()` from a
+`requestAnimationFrame` loop. `_move` assigns the zoom verbatim without `_limitZoom`, so the gesture
+is fractional **while `zoomSnap` stays at 1** — every other view call in the app still lands on a
+whole level, unchanged. Tagging the move `{pinch: true}` keeps `updateWhenZooming: false` in force,
+so the grid is transformed rather than refetched. Measured across one gesture: **81 distinct zoom
+values over 253 frames** (was 3), largest single step 0.39 levels (was a full level), and zero grid
+rebuilds.
+
+The settle matters because the basemap is raster: between two levels it is a scaled bitmap. Stopping
+eases onto the nearest whole level so it comes to rest sharp. Past a small dead zone a gesture always
+commits at least one level, so a single wheel notch can't round back to where it started and do
+nothing.
+
+Not tried and rejected: `zoomAnimation: false`. It would route every notch through `_resetView`,
+which fires `viewprereset`, which `GridLayer` binds to `_invalidateAll` — **one wheel notch would
+delete every tile and rebuild the grid.**
+
 Two changes were tried, measured, and reverted rather than shipped: continuous zoom (`zoomSnap: 0`)
 made a wheel notch move a fifth of a level instead of a whole one, and — since these are raster
 tiles — left the basemap a scaled bitmap whenever it sat between levels; and a larger `keepBuffer`
