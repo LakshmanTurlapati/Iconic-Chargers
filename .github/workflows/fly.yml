@@ -58,6 +58,16 @@ jobs:
           python3 -m http.server 8731 --bind 127.0.0.1 --directory . > /tmp/iconic-http.log 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid"' EXIT
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8731/web/index.html >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              cat /tmp/iconic-http.log
+              exit 1
+            fi
+            sleep 1
+          done
           node scripts/verify.mjs http://127.0.0.1:8731/web/index.html
 
       - name: Run throttled interaction benchmark
@@ -65,6 +75,16 @@ jobs:
           python3 -m http.server 8731 --bind 127.0.0.1 --directory .site > /tmp/iconic-http.log 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid"' EXIT
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8731/ >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              cat /tmp/iconic-http.log
+              exit 1
+            fi
+            sleep 1
+          done
           node scripts/bench.mjs http://127.0.0.1:8731/ --cpu=6
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
