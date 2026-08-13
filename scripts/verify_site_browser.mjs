@@ -203,6 +203,16 @@ try {
   await send("Runtime.enable");
   await send("Page.addScriptToEvaluateOnNewDocument", { source: `
     try { localStorage.setItem('iconic.locale.v1', 'ja'); } catch (_) {}
+    var nativeFetch = window.fetch.bind(window);
+    window.fetch = function (input, options) {
+      if (String(input) !== 'https://api.country.is/') return nativeFetch(input, options);
+      options = options || {};
+      window.__countryRequest = {url:String(input),credentials:options.credentials,
+        referrerPolicy:options.referrerPolicy,headers:options.headers || null};
+      return Promise.resolve({ok:true,json:function () {
+        return Promise.resolve({ip:'203.0.113.1',country:'US'});
+      }});
+    };
     Object.defineProperty(window, 'maplibregl', {
       configurable: true,
       set: function (value) {
@@ -263,6 +273,9 @@ try {
       lang: document.documentElement.lang,
       dir: document.documentElement.dir,
       locale: window.__ICONIC_I18N__?.locale,
+      country: window.__ICONIC_I18N__?.country || null,
+      miles: window.__ICONIC_I18N__?.miles,
+      countryRequest: window.__countryRequest || null,
       languageValue: document.getElementById('language').value,
       storedLocale: localStorage.getItem('iconic.locale.v1'),
       hasAutomaticOption: !!document.querySelector('#language option[value="auto"]'),
@@ -327,6 +340,12 @@ try {
   assert(french.pathname === "/fr/", "French generated route was not loaded", french);
   assert(french.locale === "fr" && french.lang === "fr" && french.languageValue === "fr",
     "French path locale did not win", french);
+  assert(readyFrench.country === "US" && readyFrench.miles === true &&
+    readyFrench.countryRequest?.url === "https://api.country.is/" &&
+    readyFrench.countryRequest?.credentials === "omit" &&
+    readyFrench.countryRequest?.referrerPolicy === "no-referrer" &&
+    readyFrench.countryRequest?.headers == null,
+    "fixed French route did not keep language-independent private country detection", readyFrench);
   assert(french.storedLocale === "ja", "preloaded conflicting saved locale was not present", french);
   assert(readyFrench.pinCount === 53 && readyFrench.styleLoaded,
     "generated map did not render all 53 locations before filtering", readyFrench);
@@ -374,6 +393,46 @@ try {
     "German reload did not restore the deep-link selection", reloaded);
   assert(reloaded.pinCount === 53 && reloaded.styleLoaded, "German reload did not render all locations", reloaded);
   assertMetadataState(reloaded, "de");
+
+  // Without a deep link or other user intent, that same fixed French route
+  // uses the country only for units and its one-shot startup camera.
+  await evaluate(`sessionStorage.clear()`);
+  const overviewURL = new URL("fr/", ROOT);
+  overviewURL.searchParams.set("verifySite", "country-framing");
+  await send("Page.navigate", { url: overviewURL.href });
+  for (let i = 0; i < 350; i++) {
+    const ready = await evaluate(`!!window.__map && __map.isStyleLoaded() &&
+      document.querySelectorAll('.pin').length === 53 &&
+      window.__ICONIC_I18N__?.locale === 'fr' && window.__ICONIC_I18N__?.country === 'US' &&
+      !__map.isMoving()`);
+    if (ready) break;
+    await sleep(100);
+  }
+  await sleep(200);
+  const countryOverview = await snapshot();
+  countryOverview.frame = await evaluate(`(() => {
+    const sites = ICONIC.sites.filter(s => s.country === 'USA');
+    const panel = document.getElementById('panel').getBoundingClientRect();
+    const clear = sites.filter(s => {
+      const q = __map.project([s.longitude,s.latitude]);
+      return q.x >= 22 && q.x <= panel.left - 22 && q.y >= 22 && q.y <= innerHeight - 22;
+    }).length;
+    return {sites:sites.length,clear:clear,zoom:__map.getZoom(),minZoom:__map.getMinZoom()};
+  })()`);
+  assert(countryOverview.locale === "fr" && countryOverview.lang === "fr" &&
+    countryOverview.languageValue === "fr" && countryOverview.country === "US" &&
+    countryOverview.miles === true,
+    "country framing changed the fixed French route language", countryOverview);
+  assert(countryOverview.pinCount === 53 && !countryOverview.detailOpen &&
+    countryOverview.frame.sites === 18 && countryOverview.frame.clear === 18 &&
+    countryOverview.frame.zoom <= 5.000001 &&
+    countryOverview.frame.zoom > countryOverview.frame.minZoom + 0.01,
+    "published route did not frame the detected country's chargers", countryOverview);
+  assert(countryOverview.countryRequest?.credentials === "omit" &&
+    countryOverview.countryRequest?.referrerPolicy === "no-referrer" &&
+    countryOverview.countryRequest?.headers == null,
+    "published country framing request lost its privacy contract", countryOverview.countryRequest);
+  assertMetadataState(countryOverview, "fr");
   assert(pageExceptions.length === 0, "page raised JavaScript exceptions", pageExceptions);
 
   report = {
@@ -383,6 +442,7 @@ try {
     initial: french,
     switched: german,
     reloaded,
+    countryOverview,
   };
   console.log(JSON.stringify(report, null, 2));
 } catch (error) {

@@ -177,50 +177,76 @@ await send("Page.addScriptToEvaluateOnNewDocument", { source: `
     Object.defineProperty(navigator, 'language', { configurable: true, get: () => values[0] });
   }
   var verifyCountry = verifyParams.get('verifyCountry');
-  if (verifyCountry) {
-    var nativeFetch = window.fetch.bind(window);
-    window.fetch = function (input, options) {
-      if (String(input) !== 'https://api.country.is/') return nativeFetch(input, options);
-      options = options || {};
-      window.__countryRequest = {
-        url: String(input),
-        method: options.method || 'GET',
-        credentials: options.credentials,
-        referrerPolicy: options.referrerPolicy,
-        headers: options.headers || null,
-        started: performance.now(),
-        aborted: false,
-        abortDelayMs: null
-      };
-      if (verifyCountry === 'FAIL') return Promise.reject(new TypeError('mock failure'));
-      if (verifyCountry === 'HTTP_ERROR') {
-        return Promise.resolve({ ok: false, json: function () {
-          return Promise.resolve({ ip: '203.0.113.1', country: 'US' });
-        }});
-      }
-      if (verifyCountry === 'BAD_JSON') {
-        return Promise.resolve({ ok: true, json: function () {
-          return Promise.reject(new SyntaxError('mock invalid JSON'));
-        }});
-      }
-      if (verifyCountry === 'STALL') {
-        return new Promise(function (_, reject) {
-          var abort = function () {
-            window.__countryRequest.aborted = true;
-            window.__countryRequest.abortDelayMs =
-              performance.now() - window.__countryRequest.started;
-            reject(new DOMException('Aborted', 'AbortError'));
-          };
-          if (options.signal && options.signal.aborted) abort();
-          else if (options.signal) options.signal.addEventListener('abort', abort, { once: true });
-        });
-      }
-      var country = verifyCountry === 'MALFORMED' ? 'USA' : verifyCountry;
-      return Promise.resolve({ ok: true, json: function () {
-        return Promise.resolve({ ip: '203.0.113.1', country: country });
-      }});
+  var nativeFetch = window.fetch.bind(window);
+  window.fetch = function (input, options) {
+    if (String(input) !== 'https://api.country.is/') return nativeFetch(input, options);
+    options = options || {};
+    window.__countryRequest = {
+      url: String(input),
+      method: options.method || 'GET',
+      credentials: options.credentials,
+      referrerPolicy: options.referrerPolicy,
+      headers: options.headers || null,
+      started: performance.now(),
+      aborted: false,
+      abortDelayMs: null
     };
-  }
+    // Ordinary product-flow loads deliberately exercise the provider-failure
+    // fallback instead of leaking the test runner's IP or inheriting its map.
+    if (!verifyCountry || verifyCountry === 'FAIL') {
+      return Promise.reject(new TypeError('mock failure'));
+    }
+    if (verifyCountry === 'HTTP_ERROR') {
+      return Promise.resolve({ ok: false, json: function () {
+        return Promise.resolve({ ip: '203.0.113.1', country: 'US' });
+      }});
+    }
+    if (verifyCountry === 'BAD_JSON') {
+      return Promise.resolve({ ok: true, json: function () {
+        return Promise.reject(new SyntaxError('mock invalid JSON'));
+      }});
+    }
+    if (verifyCountry === 'STALL') {
+      return new Promise(function (_, reject) {
+        var abort = function () {
+          window.__countryRequest.aborted = true;
+          window.__countryRequest.abortDelayMs =
+            performance.now() - window.__countryRequest.started;
+          reject(new DOMException('Aborted', 'AbortError'));
+        };
+        if (options.signal && options.signal.aborted) abort();
+        else if (options.signal) options.signal.addEventListener('abort', abort, { once: true });
+      });
+    }
+    if (/^DELAY_[A-Z]{2}$/.test(verifyCountry)) {
+      var delayedCountry = verifyCountry.slice(6);
+      return new Promise(function (resolve, reject) {
+        var settled = false;
+        var timer = setTimeout(function () {
+          if (settled) return;
+          settled = true;
+          resolve({ ok: true, json: function () {
+            return Promise.resolve({ ip: '203.0.113.1', country: delayedCountry });
+          }});
+        }, 900);
+        var abort = function () {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          window.__countryRequest.aborted = true;
+          window.__countryRequest.abortDelayMs =
+            performance.now() - window.__countryRequest.started;
+          reject(new DOMException('Aborted', 'AbortError'));
+        };
+        if (options.signal && options.signal.aborted) abort();
+        else if (options.signal) options.signal.addEventListener('abort', abort, { once: true });
+      });
+    }
+    var country = verifyCountry === 'MALFORMED' ? 'USA' : verifyCountry;
+    return Promise.resolve({ ok: true, json: function () {
+      return Promise.resolve({ ip: '203.0.113.1', country: country });
+    }});
+  };
 ` });
 await send("Emulation.setDeviceMetricsOverride",
   { width: innerW, height: innerH, deviceScaleFactor: DPR, mobile: false });
@@ -236,12 +262,34 @@ async function load(hash = "", base = URL_) {
   await sleep(800);
 }
 
+async function loadUntilInteractive(url) {
+  errors.length = 0;
+  await send("Page.navigate", { url });
+  for (let i = 0; i < 200; i++) {
+    if (await ev(`!!window.__map && document.querySelectorAll('.item').length === 40 &&
+      document.querySelectorAll('.pin').length === 53 && __map.getMinZoom() > -2`)) return;
+    await sleep(25);
+  }
+  throw new Error(`page did not become interactive: ${url}`);
+}
+
 const out = {};
 const click = (sel) => ev(`(document.querySelector(${JSON.stringify(sel)})||{click(){}}).click(), 1`);
 const type = (s) => ev(`(() => { const q = document.getElementById('q');
   q.value = ${JSON.stringify(s)}; q.dispatchEvent(new Event('input', {bubbles:true})); return 1; })()`);
 const frame2 = () => ev(`new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))`, true);
 const rows = `[...document.querySelectorAll('.item')].filter(e => !e.hidden)`;
+const visibleContextState = `(() => {
+  const names = new Set(${rows}.map(e => e.dataset.badge));
+  const sites = ICONIC.sites.filter(s => names.has(s.badge));
+  const panel = document.getElementById('panel').getBoundingClientRect();
+  const clear = sites.filter(s => {
+    const q = __map.project([s.longitude, s.latitude]);
+    return q.x >= 22 && q.x <= panel.left - 22 && q.y >= 22 && q.y <= innerHeight - 22;
+  }).length;
+  return {sites:sites.length, clear:clear, zoom:__map.getZoom(), minZoom:__map.getMinZoom(),
+    center:__map.getCenter().toArray(), moving:__map.isMoving()};
+})()`;
 
 // Where each pin IS drawn, against where it BELONGS.
 //
@@ -303,6 +351,10 @@ out.detailHiddenAtRest = await ev(`document.getElementById('detail').hidden`);
 out.rowsBuilt = await ev(`document.querySelectorAll('.item').length`);
 out.markersOnMap = await ev(`document.querySelectorAll('.pin').length`);
 out.footNote = await ev(`/total stalls, not live availability/.test(document.querySelector('.foot').textContent)`);
+out.desktopFooterVisible = await ev(`(() => {
+  const f = document.querySelector('.foot');
+  return getComputedStyle(f).display !== 'none' && f.offsetParent !== null;
+})()`);
 out.noLegend = await ev(`!document.querySelector('.legend')`);
 out.zoomBtnShape = await ev(`(() => {
   const s = getComputedStyle(document.querySelector('.maplibregl-ctrl-zoom-in'));
@@ -477,7 +529,7 @@ await load();
 // actually on screen -- the panel on the right, the detail card on the left.
 const behind = `(q) => {
   const hit = (el) => {
-    if (!el || el.hidden) return false;
+    if (!el || el.hidden || getComputedStyle(el).visibility === 'hidden') return false;
     const r = el.getBoundingClientRect();
     return q.x > r.left && q.x < r.right && q.y > r.top && q.y < r.bottom;
   };
@@ -560,17 +612,20 @@ out.chips = {
   restingRegionsQuiet: await ev(
     `[...document.querySelectorAll('.chip[data-region]')].every(c => c.getAttribute('aria-pressed') === 'false')`)
 };
-await click('.chip[data-region="Europe"]'); await frame2();
+await click('.chip[data-region="Europe"]'); await sleep(850);
 out.chips.afterPickEurope = { rows: await ev(`${rows}.length`), europe: await pressed("Europe"),
-  all: await ev(`document.querySelector('.chips .chip').getAttribute('aria-pressed')`) };
-await click('.chip[data-region="Asia"]'); await frame2();
-out.chips.plusAsia = { rows: await ev(`${rows}.length`), asia: await pressed("Asia") };
-await click('.chip[data-region="Asia"]'); await frame2();
-out.chips.minusAsia = { rows: await ev(`${rows}.length`) };
-await click(".chips .chip"); await frame2();          // "All"
+  all: await ev(`document.querySelector('.chips .chip').getAttribute('aria-pressed')`),
+  camera: await ev(visibleContextState) };
+await click('.chip[data-region="Asia"]'); await sleep(850);
+out.chips.plusAsia = { rows: await ev(`${rows}.length`), asia: await pressed("Asia"),
+  camera: await ev(visibleContextState) };
+await click('.chip[data-region="Asia"]'); await sleep(850);
+out.chips.minusAsia = { rows: await ev(`${rows}.length`), camera: await ev(visibleContextState) };
+await click(".chips .chip"); await sleep(850);          // "All"
 out.chips.afterAll = {
   rows: await ev(`${rows}.length`),
   all: await ev(`document.querySelector('.chips .chip').getAttribute('aria-pressed')`),
+  camera: await ev(visibleContextState),
   regionsQuiet: await ev(
     `[...document.querySelectorAll('.chip[data-region]')].every(c => c.getAttribute('aria-pressed') === 'false')`)
 };
@@ -582,6 +637,21 @@ out.chips.allFourCollapsesToAll = {
   rows: await ev(`${rows}.length`),
   all: await ev(`document.querySelector('.chips .chip').getAttribute('aria-pressed')`)
 };
+
+// Region framing uses the post-filter visible set, including a live query.
+// With zero matches there is no meaningful camera, so the existing one stays.
+await click(".chips .chip"); await sleep(850);
+await type("germany"); await frame2();
+await click('.chip[data-region="Europe"]'); await sleep(850);
+out.chips.searchIntersection = {
+  rows: await ev(`${rows}.length`), camera: await ev(visibleContextState)
+};
+const beforeZeroResultChip = await ev(`({center:__map.getCenter().toArray(),zoom:__map.getZoom()})`);
+await type("zzzzzz"); await frame2();
+await click('.chip[data-region="Asia"]'); await sleep(100);
+const afterZeroResultChip = await ev(`({center:__map.getCenter().toArray(),zoom:__map.getZoom()})`);
+out.chips.zeroResultsKeepCamera = JSON.stringify(beforeZeroResultChip) ===
+  JSON.stringify(afterZeroResultChip);
 
 // ------------------------------------------------- 5. detail from a row ----
 await load();
@@ -910,21 +980,29 @@ await send("Emulation.setDeviceMetricsOverride",
   { width: 430, height: 900, deviceScaleFactor: 2, mobile: true });
 await load("#Waikiki");
 out.narrow = {
+  footerHidden: await ev(`(() => {
+    const f = document.querySelector('.foot');
+    return getComputedStyle(f).display === 'none' && f.offsetParent === null;
+  })()`),
   panelIsBottomSheet: await ev(`(() => {
     const p = document.getElementById('panel').getBoundingClientRect();
     return { bottomAnchored: Math.abs(innerHeight - p.bottom) < 20,
              spansWidth: p.width > innerWidth * 0.9,
              maxHeightOk: p.height <= innerHeight * 0.7 };
   })()`),
-  // The card overlays the sheet in the same footprint rather than adding a
-  // second one and squeezing the map.
+  // The card uses the same footprint without leaving the search/list card
+  // visible or interactive underneath it.
   detailOverlaysSheet: await ev(`(() => {
-    const d = document.getElementById('detail').getBoundingClientRect();
-    const p = document.getElementById('panel').getBoundingClientRect();
+    const detail = document.getElementById('detail');
+    const panel = document.getElementById('panel');
+    const d = detail.getBoundingClientRect();
+    const p = panel.getBoundingClientRect();
+    const ds = getComputedStyle(detail), ps = getComputedStyle(panel);
     return { open: !document.getElementById('detail').hidden,
              sameFootprint: Math.abs(d.left - p.left) < 2 && Math.abs(d.bottom - p.bottom) < 2,
-             onTop: getComputedStyle(document.getElementById('detail')).zIndex >
-                    getComputedStyle(document.getElementById('panel')).zIndex };
+             onTop: ds.zIndex > ps.zIndex,
+             panelSuppressed: ps.visibility === 'hidden' && ps.pointerEvents === 'none',
+             detailVisible: ds.visibility === 'visible' };
   })()`),
   siteAboveSheet: await ev(`(() => {
     const under = ${behind};
@@ -941,13 +1019,32 @@ out.narrow = {
 await click("#dclose"); await frame2();
 out.narrow.controlsReachable = await ev(`(() => {
   const under = ${behind};
+  const panel = document.getElementById('panel');
+  const footer = document.querySelector('.foot');
   const mid = (el) => { const r = el.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2, r: r }; };
   const z = mid(document.querySelector('.maplibregl-ctrl-zoom-in'));
   const a = mid(document.querySelector('.maplibregl-ctrl-attrib'));
   const onScreen = (q) => q.r.width > 0 && q.r.top >= 0 && q.r.bottom <= innerHeight;
   return { zoom: !under(z) && onScreen(z), attribution: !under(a) && onScreen(a),
+           panelRestored: getComputedStyle(panel).visibility === 'visible',
+           footerStillHidden: getComputedStyle(footer).display === 'none',
            corner: document.querySelector('.maplibregl-ctrl-zoom-in').closest('.maplibregl-ctrl-top-right, .maplibregl-ctrl-bottom-right').className };
+})()`);
+await click('.chip[data-region="Europe"]');
+await sleep(850);
+out.narrow.regionFrame = await ev(`(() => {
+  const names = new Set(${rows}.map(e => e.dataset.badge));
+  const sites = ICONIC.sites.filter(s => names.has(s.badge));
+  const panel = document.getElementById('panel').getBoundingClientRect();
+  const clear = [...document.querySelectorAll('.pin')].filter(pin => {
+    const r = pin.getBoundingClientRect();
+    const q = {x:r.left+r.width/2,y:r.top+r.height/2};
+    return r.width > 0 && q.x >= 22 && q.x <= innerWidth - 22 &&
+      q.y >= 22 && q.y <= panel.top - 22;
+  }).length;
+  return {rows:names.size,sites:sites.length,clear:clear,
+    zoom:__map.getZoom(),moving:__map.isMoving()};
 })()`);
 
 /* ------------------------------------------- 12b. the phone, specifically ---
@@ -992,6 +1089,89 @@ const sheetGeom = (id) => `(() => {
            zoomClear: z.bottom <= r.top, attribClear: a.bottom <= r.top,
            expanded: document.getElementById('${id}-grab').getAttribute('aria-expanded') };
 })()`;
+
+// Opening details must suppress only the mobile presentation of the list. Its
+// live state and measurable sheet geometry survive so closing can restore the
+// exact search experience the user left.
+await load();
+await click("#panel-grab");                         // half -> full
+await sleep(620);
+await type("a");
+await frame2();
+await ev(`(() => { const l = document.getElementById('list');
+  l.scrollTop = Math.min(173, Math.max(0, l.scrollHeight - l.clientHeight)); return 1; })()`);
+await frame2();
+const mobilePanelBefore = await ev(`(() => {
+  const p = document.getElementById('panel');
+  const l = document.getElementById('list');
+  return { query:document.getElementById('q').value, scroll:l.scrollTop,
+           maxScroll:l.scrollHeight-l.clientHeight,
+           height:Math.round(p.getBoundingClientRect().height),
+           visibility:getComputedStyle(p).visibility };
+})()`);
+const mobileSelectedRow = await ev(`(() => {
+  const l = document.getElementById('list'), lr = l.getBoundingClientRect();
+  const row = [...document.querySelectorAll('.item')].find((el) => {
+    if (el.hidden) return false;
+    const r = el.getBoundingClientRect();
+    return r.top >= lr.top && r.bottom <= lr.bottom;
+  });
+  if (!row) return null;
+  row.click();
+  return row.dataset.badge;
+})()`);
+await sleep(1700);
+const mobilePanelDuring = await ev(`(() => {
+  const p = document.getElementById('panel');
+  const l = document.getElementById('list');
+  const s = getComputedStyle(p);
+  return { detailOpen:!document.getElementById('detail').hidden,
+           bodyState:document.body.classList.contains('is-detail-open'),
+           panelSuppressed:s.visibility === 'hidden' && s.pointerEvents === 'none',
+           visibility:s.visibility, pointerEvents:s.pointerEvents,
+           query:document.getElementById('q').value, scroll:l.scrollTop,
+           height:Math.round(p.getBoundingClientRect().height),
+           focus:document.activeElement.id };
+})()`);
+await click("#dclose");
+await frame2();
+const mobilePanelAfter = await ev(`(() => {
+  const p = document.getElementById('panel');
+  const l = document.getElementById('list');
+  return { detailClosed:document.getElementById('detail').hidden,
+           bodyStateCleared:!document.body.classList.contains('is-detail-open'),
+           panelRestored:getComputedStyle(p).visibility === 'visible',
+           visibility:getComputedStyle(p).visibility,
+           query:document.getElementById('q').value, scroll:l.scrollTop,
+           height:Math.round(p.getBoundingClientRect().height),
+           focusedRow:document.activeElement.dataset && document.activeElement.dataset.badge };
+})()`);
+out.mobileDetailState = {
+  selectedRow: mobileSelectedRow,
+  before: mobilePanelBefore,
+  during: mobilePanelDuring,
+  after: mobilePanelAfter,
+  selectedRowFound: Boolean(mobileSelectedRow),
+  listScrollableAndScrolled: mobilePanelBefore.maxScroll > 0 && mobilePanelBefore.scroll > 0,
+  focusRestored: mobilePanelAfter.focusedRow === mobileSelectedRow,
+  statePreserved: mobilePanelBefore.query === mobilePanelDuring.query &&
+    mobilePanelBefore.query === mobilePanelAfter.query &&
+    // Selecting a row may first nudge it into view. Once the panel is hidden,
+    // the detail lifecycle must leave that resulting scroll position alone.
+    Math.abs(mobilePanelDuring.scroll - mobilePanelAfter.scroll) <= 1 &&
+    mobilePanelBefore.height === mobilePanelDuring.height &&
+    mobilePanelBefore.height === mobilePanelAfter.height
+};
+
+await load("#Waikiki");
+await ev(`document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true})), 1`);
+await frame2();
+out.mobileEscapeRestores = await ev(`(() => {
+  const p = document.getElementById('panel');
+  return { detailClosed:document.getElementById('detail').hidden,
+           panelVisible:getComputedStyle(p).visibility === 'visible',
+           bodyStateCleared:!document.body.classList.contains('is-detail-open') };
+})()`);
 
 await load();
 out.touch = {
@@ -1092,9 +1272,12 @@ if (pinAt) {
     const lit = [...document.querySelectorAll('.tip')]
       .filter(t => parseFloat(getComputedStyle(t).opacity) > 0.01).length;
     const d = document.getElementById('detail');
+    const p = document.getElementById('panel');
     const r = d.getBoundingClientRect();
     const a = document.querySelector('.btn.primary');
+    const ps = getComputedStyle(p);
     return { detailOpened: !d.hidden, strandedTooltips: lit,
+             panelSuppressed: ps.visibility === 'hidden' && ps.pointerEvents === 'none',
              // Opening at the middle detent is what leaves a strip of map to
              // frame the site into; a full-height card would leave none.
              mapStripAbove: Math.round(r.top),
@@ -1158,7 +1341,9 @@ await sleep(1400);
 await touchDrag("#detail-grab", 420, 4, 0);
 out.flickDismiss = {
   detailGone: await ev(`document.getElementById('detail').hidden`),
-  listSurvives: await ev(`document.getElementById('panel').getBoundingClientRect().height > 100`)
+  listSurvives: await ev(`document.getElementById('panel').getBoundingClientRect().height > 100`),
+  panelRestored: await ev(`getComputedStyle(document.getElementById('panel')).visibility === 'visible' &&
+    !document.body.classList.contains('is-detail-open')`)
 };
 await touchDrag("#panel-grab", 800, 4, 0);
 out.listNeverDismisses = await ev(`(() => {
@@ -1223,11 +1408,14 @@ out.landscapePhone = await ev(`(() => {
   const q = __map.project([s.longitude, s.latitude]);
   const raw = 24 + (innerWidth - d.left) + 24;
   const k = raw > innerWidth * 0.7 ? innerWidth * 0.7 / raw : 1;
+  const ps = getComputedStyle(document.getElementById('panel'));
   return {
     mode: matchMedia('(max-width: 820px) and (max-height: 500px)').matches ? 'side' : 'NOT side',
     dockedRight: Math.abs(innerWidth - p.right) <= 12 && p.width <= 360,
     fullHeight: p.height >= innerHeight - 24,
     detailOverlays: Math.abs(d.right - p.right) < 2,
+    panelSuppressed: ps.visibility === 'hidden' && ps.pointerEvents === 'none',
+    footerHidden: getComputedStyle(document.querySelector('.foot')).display === 'none',
     corner: z.closest('.maplibregl-ctrl-top-left, .maplibregl-ctrl-top-right, .maplibregl-ctrl-bottom-right').className.trim(),
     controlsClearOfCard: zr.right < p.left && a.right < p.left,
     grabberHidden: getComputedStyle(document.getElementById('panel-grab')).display === 'none',
@@ -1306,10 +1494,10 @@ out.resizeWithSelection = {
 await load("", freshURL("floor-independence"));
 const independentFloorBefore = await ev(`__map.getMinZoom()`);
 const restingPanelHeight = await ev(`document.getElementById('panel').getBoundingClientRect().height`);
-await type("yosemite"); await frame2();
-await click('.item[data-badge="Yosemite"]');
 await click("#panel-grab");
 await sleep(350);
+await type("yosemite"); await frame2();
+await click('.item[data-badge="Yosemite"]');
 await ev(`window.dispatchEvent(new Event('resize')), 1`);
 await sleep(350);
 out.overviewFloorIndependence = {
@@ -1550,25 +1738,40 @@ async function ipLocaleScenario(tag, languages, country, settle = 80) {
   await ev(`localStorage.removeItem('iconic.locale.v1'); sessionStorage.clear()`);
   await load("", localeURL(tag, languages, country));
   await sleep(settle);
-  const result = await ev(`({
-    locale:__ICONIC_I18N__.locale,
-    country:__ICONIC_I18N__.country,
-    miles:__ICONIC_I18N__.miles,
-    request:window.__countryRequest || null,
-    rows:document.querySelectorAll('.item').length,
-    markers:document.querySelectorAll('.pin').length,
-    styleLoaded:__map.isStyleLoaded(),
-    lang:document.documentElement.lang,
-    dir:document.documentElement.dir,
-    storedCountry:sessionStorage.getItem('iconic.country.v1')
-  })`);
+  const sourceCountry = ({ US:"USA", CA:"Canada", HK:"Hong Kong", IT:"Italy", BR:"Brazil" })[country];
+  const result = await ev(`(() => {
+    const countrySites = ICONIC.sites.filter(s => s.country === ${JSON.stringify(sourceCountry)});
+    const panel = document.getElementById('panel').getBoundingClientRect();
+    const clear = countrySites.filter(s => {
+      const q = __map.project([s.longitude, s.latitude]);
+      return q.x >= 22 && q.x <= panel.left - 22 && q.y >= 22 && q.y <= innerHeight - 22;
+    }).length;
+    return {
+      locale:__ICONIC_I18N__.locale,
+      country:__ICONIC_I18N__.country,
+      miles:__ICONIC_I18N__.miles,
+      request:window.__countryRequest || null,
+      rows:document.querySelectorAll('.item').length,
+      markers:document.querySelectorAll('.pin').length,
+      allPressed:document.querySelector('.chips .chip').getAttribute('aria-pressed'),
+      countryFrame:{sites:countrySites.length, clear:clear},
+      styleLoaded:__map.isStyleLoaded(),
+      lang:document.documentElement.lang,
+      dir:document.documentElement.dir,
+      camera:{center:__map.getCenter().toArray(), zoom:__map.getZoom(),
+        minZoom:__map.getMinZoom(), moving:__map.isMoving()},
+      storedCountry:sessionStorage.getItem('iconic.country.v1')
+    };
+  })()`);
   result.consoleClean = errors.length === 0 ? true : errors.slice(0, 4);
   return result;
 }
 out.i18n.ip = {
   usSpanish: await ipLocaleScenario('ip-us-es', ['es-MX','en-US'], 'US'),
   canadaFrench: await ipLocaleScenario('ip-ca-fr', ['fr-CA','en-CA'], 'CA'),
+  italySingle: await ipLocaleScenario('ip-it-en', ['en-US'], 'IT'),
   hongKongCantonese: await ipLocaleScenario('ip-hk-yue', ['yue-HK','zh-HK','en-HK'], 'HK'),
+  noSites: await ipLocaleScenario('ip-no-sites', ['en-US'], 'BR'),
   malformed: await ipLocaleScenario('ip-malformed', ['de-DE'], 'MALFORMED'),
   rejected: await ipLocaleScenario('ip-rejected', ['fr-FR'], 'FAIL'),
   httpError: await ipLocaleScenario('ip-http-error', ['ko-KR'], 'HTTP_ERROR'),
@@ -1576,22 +1779,25 @@ out.i18n.ip = {
   stalled: await ipLocaleScenario('ip-stalled', ['ja-JP'], 'STALL', 1700)
 };
 
-// Cache and explicit-choice cases are separate from provider outcomes: these
-// prove that a valid cache or a saved language suppresses the request, while an
-// expired or malformed cache is discarded and does not become trusted state.
+// Cache and explicit-choice cases are separate from provider outcomes: a valid
+// cache suppresses the request, while a saved language now keeps only language
+// fixed and still allows country-aware units/framing. Bad caches are refreshed.
 await ev(`localStorage.removeItem('iconic.locale.v1');
   sessionStorage.setItem('iconic.country.v1', JSON.stringify({country:'CA',
     expires:Date.now()+3600000}))`);
 await load("", localeURL('ip-valid-cache', ['fr-FR'], 'US'));
 out.i18n.validCountryCache = await ev(`({locale:__ICONIC_I18N__.locale,
   country:__ICONIC_I18N__.country, miles:__ICONIC_I18N__.miles,
+  camera:{zoom:__map.getZoom(),minZoom:__map.getMinZoom(),moving:__map.isMoving()},
   request:window.__countryRequest || null,
   storedCountry:sessionStorage.getItem('iconic.country.v1')})`);
 
 await ev(`localStorage.setItem('iconic.locale.v1','de'); sessionStorage.clear()`);
-await load("", localeURL('ip-saved-suppresses', ['fr-FR'], 'US'));
-out.i18n.savedChoiceSuppressesLookup = await ev(`({locale:__ICONIC_I18N__.locale,
-  country:__ICONIC_I18N__.country, request:window.__countryRequest || null,
+await load("", localeURL('ip-saved-keeps-locale', ['fr-FR'], 'US'));
+out.i18n.savedChoiceKeepsLocale = await ev(`({locale:__ICONIC_I18N__.locale,
+  country:__ICONIC_I18N__.country, miles:__ICONIC_I18N__.miles,
+  request:window.__countryRequest || null,
+  storedCountry:sessionStorage.getItem('iconic.country.v1'),
   stored:localStorage.getItem('iconic.locale.v1')})`);
 
 await ev(`localStorage.removeItem('iconic.locale.v1');
@@ -1608,6 +1814,103 @@ await load("", localeURL('ip-malformed-cache', ['ja-JP'], 'FAIL'));
 out.i18n.malformedCountryCache = await ev(`({locale:__ICONIC_I18N__.locale,
   country:__ICONIC_I18N__.country, request:window.__countryRequest || null,
   storedCountry:sessionStorage.getItem('iconic.country.v1')})`);
+
+// A late country result may still update units/cache, but every meaningful UI
+// intent owns the camera from that point onward. Exercise each entry path with
+// the same delayed Canadian result so none can pass by aborting the request.
+async function delayedCountryGuard(tag, action, hash = "") {
+  await ev(`localStorage.removeItem('iconic.locale.v1'); sessionStorage.clear()`);
+  const url = new URL(localeURL(`country-guard-${tag}`, ["en-US"], "DELAY_CA"));
+  if (hash) url.hash = encodeURIComponent(hash);
+  await loadUntilInteractive(url.href);
+  if (action) await ev(action);
+  await sleep(1900);
+  for (let i = 0; i < 20 && await ev(`__map.isMoving()`); i++) await sleep(100);
+  return ev(`(() => {
+    const visible = ${visibleContextState};
+    const current = document.querySelector('.item[aria-current="true"]');
+    return {locale:__ICONIC_I18N__.locale,country:__ICONIC_I18N__.country,
+      miles:__ICONIC_I18N__.miles,request:window.__countryRequest || null,
+      camera:{center:__map.getCenter().toArray(),zoom:__map.getZoom(),minZoom:__map.getMinZoom(),
+        moving:__map.isMoving()},visible:visible,query:document.getElementById('q').value,
+      europe:document.querySelector('.chip[data-region="Europe"]').getAttribute('aria-pressed'),
+      selected:current && current.dataset.badge,detailOpen:!document.getElementById('detail').hidden,
+      geoAsked:window.__geoAsked,storedCountry:sessionStorage.getItem('iconic.country.v1')};
+  })()`);
+}
+out.countryFocusGuards = {
+  search: await delayedCountryGuard("search", `(() => { const q=document.getElementById('q');
+    q.value='yosemite'; q.dispatchEvent(new Event('input',{bubbles:true})); })()`),
+  region: await delayedCountryGuard("region",
+    `document.querySelector('.chip[data-region="Europe"]').click()`),
+  nearMe: await delayedCountryGuard("near", `document.getElementById('near').click()`),
+  language: await delayedCountryGuard("language", `(() => { const s=document.getElementById('language');
+    s.value='de'; s.dispatchEvent(new Event('change',{bubbles:true})); })()`),
+  badge: await delayedCountryGuard("badge",
+    `document.querySelector('.item[data-badge="Tesla Diner"]').click()`),
+  deepLink: await delayedCountryGuard("deep-link", null, "Tesla Diner"),
+  map: await delayedCountryGuard("map", `(() => {
+    __map.getCanvas().dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'}));
+    __map.jumpTo({center:[12,5],zoom:__map.getMinZoom()+1.25});
+  })()`)
+};
+
+// The whole list card is user intent, not only its named controls. A delayed
+// result must not move the map after a sheet resize, wheel scroll or keyboard
+// activation, but it must still update units and the private country cache.
+const panelCountryState = `(() => {
+  const panel = document.getElementById('panel').getBoundingClientRect();
+  const list = document.getElementById('list');
+  return {camera:{center:__map.getCenter().toArray(),zoom:__map.getZoom(),
+      minZoom:__map.getMinZoom(),moving:__map.isMoving()},
+    panel:{height:panel.height},scroll:list.scrollTop};
+})()`;
+async function delayedPanelCountryGuard(tag, interact) {
+  await ev(`localStorage.removeItem('iconic.locale.v1'); sessionStorage.clear()`);
+  await loadUntilInteractive(localeURL(`country-panel-${tag}`, ["en-US"], "DELAY_CA"));
+  const before = await ev(panelCountryState);
+  await interact();
+  const afterInteraction = await ev(panelCountryState);
+  await sleep(1900);
+  for (let i = 0; i < 20 && await ev(`__map.isMoving()`); i++) await sleep(100);
+  const final = await ev(`(() => {
+    const state = ${panelCountryState};
+    return Object.assign(state, {locale:__ICONIC_I18N__.locale,
+      country:__ICONIC_I18N__.country,miles:__ICONIC_I18N__.miles,
+      request:window.__countryRequest || null,
+      storedCountry:sessionStorage.getItem('iconic.country.v1')});
+  })()`);
+  final.consoleClean = errors.length === 0 ? true : errors.slice(0, 4);
+  return {before, afterInteraction, final};
+}
+
+await send("Emulation.setDeviceMetricsOverride",
+  { width: 430, height: 900, deviceScaleFactor: 2, mobile: true });
+await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+out.countryPanelGuards = {
+  sheetCycle: await delayedPanelCountryGuard("sheet-cycle", async () => {
+    await click("#panel-grab");
+    await sleep(450);
+  }),
+  listScroll: await delayedPanelCountryGuard("list-scroll", async () => {
+    const point = await ev(`(() => { const r=document.getElementById('list').getBoundingClientRect();
+      return {x:r.left+r.width/2,y:r.top+Math.min(r.height/2,120)}; })()`);
+    for (let i = 0; i < 4; i++) {
+      await send("Input.dispatchMouseEvent", { type: "mouseWheel", x: point.x, y: point.y,
+        deltaX: 0, deltaY: NOTCH, buttons: 0 });
+      await sleep(40);
+    }
+    await sleep(300);
+  }),
+  keyboard: await delayedPanelCountryGuard("keyboard", async () => {
+    await ev(`(() => { const grab=document.getElementById('panel-grab'); grab.focus();
+      grab.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',bubbles:true}));
+      return 1; })()`);
+    await frame2();
+  })
+};
+await send("Emulation.setDeviceMetricsOverride",
+  { width: innerW, height: innerH, deviceScaleFactor: DPR, mobile: false });
 
 // Malformed persisted state is ignored and removed before first render.
 await ev(`localStorage.setItem('iconic.locale.v1','not-a-locale');
@@ -1781,8 +2084,9 @@ await send("Emulation.setDeviceMetricsOverride",
 await sleep(650);
 out.i18n.rtlResponsive.landscape = await ev(rtlResponsiveState);
 
-// The classic vendored build is intentional: this app promises that opening
-// the HTML file directly still works, with only the basemap using the network.
+// The classic vendored build is intentional: opening the HTML file directly
+// still works; only the basemap and optional coarse country default use the
+// network, and both retain clean fallbacks.
 await send("Emulation.setDeviceMetricsOverride",
   { width: innerW, height: innerH, deviceScaleFactor: DPR, mobile: false });
 await load("", FILE_URL);
@@ -1926,7 +2230,7 @@ const requirePrivateRequest = (request, label) => {
 
 [
   "consoleClean", "mapIsFullBleed", "cardsAreMapSiblings", "detailHiddenAtRest",
-  "footNote", "noLegend", "attributionPresent",
+  "footNote", "desktopFooterVisible", "noLegend", "attributionPresent",
   "programmaticZoomBounds.lowerClamped", "programmaticZoomBounds.upperClamped",
   "programmaticZoomBounds.zoomInDisabled", "buildings3D.exists",
   "buildings3D.aboveBaseBuildings", "buildings3D.belowRoadLabels",
@@ -1936,7 +2240,7 @@ const requirePrivateRequest = (request, label) => {
   "initialOverview.atFloor", "initialOverview.zoomOutDisabled",
   "controlsReachable.zoom", "controlsReachable.attribution", "search.clearShown",
   "clearRestores.clearHidden", "noMatch.emptyShown", "chips.restingRegionsQuiet",
-  "chips.afterAll.regionsQuiet", "detailFromRow.detailShown",
+  "chips.afterAll.regionsQuiet", "chips.zeroResultsKeepCamera", "detailFromRow.detailShown",
   "detailFromRow.listStillVisible", "detailFromRow.listStillScrollable",
   "detailFromRow.detailAtTopLeft.clearOfPanel", "detailFromRow.noPopupAnywhere",
   "detailFromRow.siteClearOfCards.onScreen", "detailFromRow.siteClearOfCards.clear",
@@ -1954,21 +2258,33 @@ const requirePrivateRequest = (request, label) => {
   "nearMe.granted.ascending", "nearMe.toggledOff.headersBack",
   "nearMe.toggledOff.distancesHidden", "nearMe.denied.msgShown",
   "nearMe.denied.buttonUsableAgain", "nearMe.denied.stillRegionOrder",
-  "colourContext.detailOpen", "narrow.panelIsBottomSheet.bottomAnchored",
+  "colourContext.detailOpen", "narrow.footerHidden", "narrow.panelIsBottomSheet.bottomAnchored",
   "narrow.panelIsBottomSheet.spansWidth", "narrow.panelIsBottomSheet.maxHeightOk",
   "narrow.detailOverlaysSheet.open", "narrow.detailOverlaysSheet.sameFootprint",
-  "narrow.detailOverlaysSheet.onTop", "narrow.siteAboveSheet.clear",
+  "narrow.detailOverlaysSheet.onTop", "narrow.detailOverlaysSheet.panelSuppressed",
+  "narrow.detailOverlaysSheet.detailVisible", "narrow.siteAboveSheet.clear",
   "narrow.consoleClean", "narrow.controlsReachable.zoom",
-  "narrow.controlsReachable.attribution", "touch.mediaApplies.coarse",
+  "narrow.controlsReachable.attribution", "narrow.controlsReachable.panelRestored",
+  "narrow.controlsReachable.footerStillHidden",
+  "mobileDetailState.selectedRowFound", "mobileDetailState.listScrollableAndScrolled",
+  "mobileDetailState.during.detailOpen", "mobileDetailState.during.bodyState",
+  "mobileDetailState.during.panelSuppressed", "mobileDetailState.after.detailClosed",
+  "mobileDetailState.after.bodyStateCleared", "mobileDetailState.after.panelRestored",
+  "mobileDetailState.focusRestored", "mobileDetailState.statePreserved",
+  "mobileEscapeRestores.detailClosed", "mobileEscapeRestores.panelVisible",
+  "mobileEscapeRestores.bodyStateCleared", "touch.mediaApplies.coarse",
   "touch.mediaApplies.hoverNone", "touch.mediaApplies.dvhSupported",
-  "touch.afterPinTap.detailOpened", "touch.afterPinTap.leavesUsableMap",
+  "touch.afterPinTap.detailOpened", "touch.afterPinTap.panelSuppressed",
+  "touch.afterPinTap.leavesUsableMap",
   "touch.afterPinTap.primaryActionOnScreen", "sheetFraming.clampHoldsEverywhere",
   "sheetFraming.framedWhereItOpened", "flickDismiss.detailGone",
-  "flickDismiss.listSurvives", "listNeverDismisses.stillOnScreen",
+  "flickDismiss.listSurvives", "flickDismiss.panelRestored",
+  "listNeverDismisses.stillOnScreen",
   "listNeverDismisses.bottomPinned", "listNeverDismisses.searchReachable",
   "throwVsNudge.differ", "keyboard.docHasFocus", "keyboard.grew",
   "landscapePhone.dockedRight", "landscapePhone.fullHeight",
-  "landscapePhone.detailOverlays", "landscapePhone.controlsClearOfCard",
+  "landscapePhone.detailOverlays", "landscapePhone.panelSuppressed",
+  "landscapePhone.footerHidden", "landscapePhone.controlsClearOfCard",
   "landscapePhone.grabberHidden", "landscapePhone.siteInVisibleBand",
   "landscapePhone.consoleClean", "resizeWhileZoomed.zoomPreserved",
   "resizeWhileZoomed.centerPreserved", "resizeWhileZoomed.bearingPreserved",
@@ -2012,6 +2328,8 @@ requireEqual("panelOnTheRight.w", 372);
 requireEqual("rowsBuilt", 40);
 requireEqual("markersOnMap", 53);
 requireEqual("zoomBtnShape", "40px/40px r=50%");
+requireEqual("mobileDetailState.before.query", "a");
+requireEqual("mobileDetailState.during.focus", "dclose");
 requireEqual("mapEngine.name", "MapLibre GL JS");
 requireEqual("mapEngine.version", "5.24.0");
 requireEqual("mapEngine.openFreeMapVectorSources", 1);
@@ -2086,6 +2404,14 @@ requireEqual("chips.minusAsia.rows", 13);
 requireEqual("chips.afterAll.rows", 40);
 requireEqual("chips.allFourCollapsesToAll.rows", 40);
 requireEqual("chips.allFourCollapsesToAll.all", "true");
+for (const name of ["afterPickEurope", "plusAsia", "minusAsia", "searchIntersection"]) {
+  const camera = out.chips[name].camera;
+  check(camera.sites > 0 && camera.clear === camera.sites && camera.zoom <= 5.000001 &&
+    camera.moving === false, `chips.${name} camera frames visible sites`, camera);
+}
+check(Math.abs(out.chips.afterAll.camera.zoom - out.chips.afterAll.camera.minZoom) < 1e-6,
+  "chips.afterAll must return to the global overview", out.chips.afterAll.camera);
+requireEqual("chips.searchIntersection.rows", 2);
 
 requireEqual("detailFromRow.title", "Tesla Diner");
 requireEqual("detailFromRow.focusMovedToClose", "dclose");
@@ -2143,6 +2469,10 @@ requireEqual("keyboard.kbAtRest", "0px");
 requireEqual("landscapePhone.mode", "side");
 requireEqual("landscapePhone.corner", "maplibregl-ctrl-top-left");
 requireEqual("overviewFloorIndependence.filteredMarkers", 1);
+check(out.narrow.regionFrame.rows === 13 && out.narrow.regionFrame.sites === 13 &&
+  out.narrow.regionFrame.clear === out.narrow.regionFrame.sites &&
+  out.narrow.regionFrame.zoom <= 5.000001 && out.narrow.regionFrame.moving === false,
+  "narrow.regionFrame must frame Europe above the sheet", out.narrow.regionFrame);
 
 // Locale rendering, bidi isolation and state preservation.
 check(out.i18n.allLocales.length === 18, "i18n.allLocales length", out.i18n.allLocales.length);
@@ -2207,6 +2537,7 @@ check(["en", "fr"].includes(out.i18n.automaticReset.locale),
 const successfulIp = [
   ["usSpanish", "es", "US", true],
   ["canadaFrench", "fr", "CA", false],
+  ["italySingle", "it", "IT", false],
   ["hongKongCantonese", "yue-Hant", "HK", false]
 ];
 successfulIp.forEach(([name, locale, country, miles]) => {
@@ -2217,9 +2548,30 @@ successfulIp.forEach(([name, locale, country, miles]) => {
   check(state.request.aborted === false, `i18n.ip.${name}.request.aborted`, state.request);
   parseCountryCache(state.storedCountry, `i18n.ip.${name}.storedCountry`, country, true);
   check(state.rows === out.rowsBuilt && state.markers === out.markersOnMap &&
-    state.styleLoaded === true && state.consoleClean === true,
+    state.allPressed === "true" && state.styleLoaded === true && state.consoleClean === true,
     `i18n.ip.${name} app remains healthy`, state);
 });
+check(out.i18n.ip.noSites.locale === "en" && out.i18n.ip.noSites.country === "BR" &&
+  out.i18n.ip.noSites.miles === false && out.i18n.ip.noSites.consoleClean === true,
+  "i18n.ip.noSites must retain locale and accept the coarse country", out.i18n.ip.noSites);
+requirePrivateRequest(out.i18n.ip.noSites.request, "i18n.ip.noSites.request");
+parseCountryCache(out.i18n.ip.noSites.storedCountry, "i18n.ip.noSites.storedCountry", "BR", true);
+[["usSpanish", 18], ["canadaFrench", 4], ["italySingle", 1]].forEach(([name, count]) => {
+  const state = out.i18n.ip[name];
+  check(state.countryFrame.sites === count && state.countryFrame.clear === count,
+    `i18n.ip.${name} country sites must fit clear of the panel`, state);
+  check(state.camera.zoom <= 5.000001 && state.camera.zoom > state.camera.minZoom + 0.01 &&
+    state.camera.moving === false,
+    `i18n.ip.${name} must land at a settled country-context zoom`, state);
+});
+check(Math.abs(out.i18n.ip.italySingle.camera.zoom - 5) < 0.001,
+  "i18n.ip.italySingle must use the z5 context cap", out.i18n.ip.italySingle);
+for (const name of ["hongKongCantonese", "noSites"]) {
+  const state = out.i18n.ip[name];
+  check(state.countryFrame.sites === 0 &&
+    Math.abs(state.camera.zoom - state.camera.minZoom) < 1e-6,
+    `i18n.ip.${name} with no mapped sites must retain overview`, state);
+}
 [
   ["malformed", "de"], ["rejected", "fr"], ["httpError", "ko"],
   ["badJson", "zh-Hant"], ["stalled", "ja"]
@@ -2232,6 +2584,8 @@ successfulIp.forEach(([name, locale, country, miles]) => {
   check(state.rows === out.rowsBuilt && state.markers === out.markersOnMap &&
     state.styleLoaded === true && state.consoleClean === true,
     `i18n.ip.${name} silent healthy fallback`, state);
+  check(Math.abs(state.camera.zoom - state.camera.minZoom) < 1e-6,
+    `i18n.ip.${name} fallback must retain overview`, state);
 });
 check(out.i18n.ip.stalled.request.aborted === true,
   "i18n.ip.stalled request must be aborted", out.i18n.ip.stalled.request);
@@ -2244,13 +2598,21 @@ check(out.i18n.validCountryCache.locale === "fr" &&
   "i18n.validCountryCache must drive locale and units", out.i18n.validCountryCache);
 check(out.i18n.validCountryCache.request == null,
   "i18n.validCountryCache must suppress lookup", out.i18n.validCountryCache);
+check(out.i18n.validCountryCache.camera.zoom <= 5.000001 &&
+  out.i18n.validCountryCache.camera.zoom > out.i18n.validCountryCache.camera.minZoom + 0.01 &&
+  out.i18n.validCountryCache.camera.moving === false,
+  "i18n.validCountryCache must jump immediately to country context", out.i18n.validCountryCache);
 parseCountryCache(out.i18n.validCountryCache.storedCountry,
   "i18n.validCountryCache.storedCountry", "CA");
-check(out.i18n.savedChoiceSuppressesLookup.locale === "de" &&
-  out.i18n.savedChoiceSuppressesLookup.stored === "de" &&
-  out.i18n.savedChoiceSuppressesLookup.country == null &&
-  out.i18n.savedChoiceSuppressesLookup.request == null,
-  "i18n.savedChoiceSuppressesLookup", out.i18n.savedChoiceSuppressesLookup);
+check(out.i18n.savedChoiceKeepsLocale.locale === "de" &&
+  out.i18n.savedChoiceKeepsLocale.stored === "de" &&
+  out.i18n.savedChoiceKeepsLocale.country === "US" &&
+  out.i18n.savedChoiceKeepsLocale.miles === true,
+  "i18n.savedChoiceKeepsLocale", out.i18n.savedChoiceKeepsLocale);
+requirePrivateRequest(out.i18n.savedChoiceKeepsLocale.request,
+  "i18n.savedChoiceKeepsLocale.request");
+parseCountryCache(out.i18n.savedChoiceKeepsLocale.storedCountry,
+  "i18n.savedChoiceKeepsLocale.storedCountry", "US", true);
 requirePrivateRequest(out.i18n.expiredCountryCache.request,
   "i18n.expiredCountryCache.request");
 check(out.i18n.expiredCountryCache.locale === "fr" &&
@@ -2264,6 +2626,59 @@ check(out.i18n.malformedCountryCache.locale === "ja" &&
   out.i18n.malformedCountryCache.country == null &&
   out.i18n.malformedCountryCache.storedCountry == null,
   "i18n.malformedCountryCache must be removed", out.i18n.malformedCountryCache);
+for (const [name, state] of Object.entries(out.countryFocusGuards)) {
+  check(state.country === "CA" && state.miles === false && state.camera.moving === false,
+    `countryFocusGuards.${name} must accept country data without a late flight`, state);
+  requirePrivateRequest(state.request, `countryFocusGuards.${name}.request`);
+  parseCountryCache(state.storedCountry, `countryFocusGuards.${name}.storedCountry`, "CA", true);
+}
+check(out.countryFocusGuards.search.query === "yosemite" &&
+  Math.abs(out.countryFocusGuards.search.camera.zoom - out.countryFocusGuards.search.camera.minZoom) < 1e-6,
+  "countryFocusGuards.search must retain the search-owned overview", out.countryFocusGuards.search);
+check(out.countryFocusGuards.region.europe === "true" &&
+  out.countryFocusGuards.region.visible.sites === 13 &&
+  out.countryFocusGuards.region.visible.clear === 13 &&
+  out.countryFocusGuards.region.camera.zoom <= 5.000001,
+  "countryFocusGuards.region must retain the Europe camera", out.countryFocusGuards.region);
+check(out.countryFocusGuards.nearMe.geoAsked >= 1 &&
+  Math.abs(out.countryFocusGuards.nearMe.camera.zoom - out.countryFocusGuards.nearMe.camera.minZoom) < 1e-6,
+  "countryFocusGuards.nearMe must retain the existing camera", out.countryFocusGuards.nearMe);
+check(out.countryFocusGuards.language.locale === "de" &&
+  Math.abs(out.countryFocusGuards.language.camera.zoom - out.countryFocusGuards.language.camera.minZoom) < 1e-6,
+  "countryFocusGuards.language must keep explicit language and camera", out.countryFocusGuards.language);
+for (const name of ["badge", "deepLink"]) {
+  const state = out.countryFocusGuards[name];
+  check(state.selected === "Tesla Diner" && state.detailOpen === true && state.camera.zoom > 5,
+    `countryFocusGuards.${name} must retain the selected-site camera`, state);
+}
+check(Math.abs(out.countryFocusGuards.map.camera.center[0] - 12) < 1e-6 &&
+  Math.abs(out.countryFocusGuards.map.camera.center[1] - 5) < 1e-6 &&
+  Math.abs(out.countryFocusGuards.map.camera.zoom -
+    (out.countryFocusGuards.map.camera.minZoom + 1.25)) < 1e-6,
+  "countryFocusGuards.map must retain the user camera", out.countryFocusGuards.map);
+for (const [name, guard] of Object.entries(out.countryPanelGuards)) {
+  const before = guard.before.camera;
+  const final = guard.final;
+  check(final.locale === "en" && final.country === "CA" && final.miles === false &&
+    final.consoleClean === true && final.camera.moving === false,
+    `countryPanelGuards.${name} must accept country data without a late flight`, guard);
+  requirePrivateRequest(final.request, `countryPanelGuards.${name}.request`);
+  parseCountryCache(final.storedCountry,
+    `countryPanelGuards.${name}.storedCountry`, "CA", true);
+  check(final.camera.center.every((value, index) =>
+      Math.abs(value - before.center[index]) < 1e-6) &&
+    Math.abs(final.camera.zoom - before.zoom) < 1e-6,
+    `countryPanelGuards.${name} must preserve the user-owned camera`, guard);
+}
+const sheetCountryGuard = out.countryPanelGuards.sheetCycle;
+check(sheetCountryGuard.afterInteraction.panel.height > sheetCountryGuard.before.panel.height + 20 &&
+  Math.abs(sheetCountryGuard.final.panel.height - sheetCountryGuard.afterInteraction.panel.height) <= 1,
+  "countryPanelGuards.sheetCycle must preserve the selected sheet detent", sheetCountryGuard);
+check(out.countryPanelGuards.listScroll.afterInteraction.scroll > 0 &&
+  Math.abs(out.countryPanelGuards.listScroll.final.scroll -
+    out.countryPanelGuards.listScroll.afterInteraction.scroll) <= 1,
+  "countryPanelGuards.listScroll must preserve the user's list position",
+  out.countryPanelGuards.listScroll);
 requireEqual("i18n.malformedSavedChoice.stored", null);
 requireEqual("i18n.malformedSavedChoice.rows", 40);
 requireEqual("i18n.prototypeSavedChoice.locale", "en");
@@ -2371,7 +2786,8 @@ if (failures.length) {
 //   wheelOverMap: gained about 3, fractionalRest true, continuity.distinct >> 3
 //   nearMe.promptedOnLoad 0 · granted.firstFour starts "Stonehenge" · ascending true
 //   nearMe.denied.msg mentions permission · achromaticPanel [] · blueUsage []
-//   narrow: panelIsBottomSheet/detailOverlaysSheet all true · overviewFloor atFloor/53 sites
+//   narrow: footer hidden, panel suppressed while detail is open and restored
+//     unchanged on close · overviewFloor atFloor/53 sites
 //   markersPlaced (desktop, touch, pitched and pitched+rotated): markerPosition
 //     "absolute", allMarkersChecked true, misplacedOver2px 0, worstOffsetPx 0,
 //     worstExample null. allMarkersChecked is the guard against a VACUOUS pass:
@@ -2386,15 +2802,17 @@ if (failures.length) {
 //   touch.hitBoxes: pin 38x24 visual grows about 12 a side to ~62x48;
 //     grabber 28 tall grows 8 top and bottom to 44. Both are pseudo-element
 //     hit boxes, so a rect-based audit cannot see them -- hence the exemptions.
-//   touch.afterPinTap: detailOpened true, strandedTooltips 0, leavesUsableMap true
+//   touch.afterPinTap: detailOpened/panelSuppressed true, strandedTooltips 0,
+//     leavesUsableMap true
 //   sheetDetents cycles full -> peek -> half -> full; at EVERY entry
 //     bottomPinned/zoomClear/attribClear true, expanded "false" only at peek
 //   sheetFraming: clampHoldsEverywhere true (raw reaches 82% at the tallest
 //     detent and clamps to 70), framedWhereItOpened true
-//   flickDismiss detailGone true, listSurvives true · listNeverDismisses all true
+//   flickDismiss detailGone/listSurvives/panelRestored true · listNeverDismisses all true
 //   throwVsNudge.differ true -- same 90px, thrown skips a detent, nudged does not
 //   keyboard.grew true · kbAtRest "0px"
 //   landscapePhone: mode "side", dockedRight/fullHeight/detailOverlays true,
+//     panelSuppressed/footerHidden true,
 //     corner maplibregl-ctrl-top-left, controlsClearOfCard true, grabberHidden true,
 //     siteInVisibleBand true
 //   resizeAtFloor.desktop atFloor/sitesWithinPadding 53 · resizeWhileZoomed all preserved

@@ -142,6 +142,16 @@ async function evaluate(expr, awaitPromise = false) {
 await send("Page.enable");
 await send("Runtime.enable");
 await send("Page.addScriptToEvaluateOnNewDocument", { source: `
+  var nativeFetch = window.fetch.bind(window);
+  window.__countryRequests = 0;
+  window.__countrySettledMs = null;
+  window.fetch = function (input, options) {
+    if (String(input) !== 'https://api.country.is/') return nativeFetch(input, options);
+    window.__countryRequests++;
+    return nativeFetch(input, options).finally(function () {
+      window.__countrySettledMs = performance.now();
+    });
+  };
   Object.defineProperty(window, 'maplibregl', {
     configurable: true,
     set: function (v) {
@@ -181,9 +191,6 @@ const NET_STATS = `(() => {
     try { return new URL(x.name).host === 'tiles.openfreemap.org'; } catch { return false; }
   });
   const vectors = mapAssets.filter((x) => /\\.pbf(?:\\?|$)/.test(x.name));
-  const country = r.filter((x) => {
-    try { return new URL(x.name).host === 'api.country.is'; } catch { return false; }
-  });
   const nav = performance.getEntriesByType('navigation')[0];
   const fcp = performance.getEntriesByType('paint').find((p) => p.name === 'first-contentful-paint');
   const styleReady = performance.getEntriesByName('maplibre-style-ready')[0];
@@ -199,8 +206,9 @@ const NET_STATS = `(() => {
   const vectorSources = Object.values(__map.getStyle().sources).filter((s) =>
     s.type === 'vector' && /tiles\\.openfreemap\\.org\\/planet/.test(s.url || '')).length;
   return { requests: r.length, mapAssets: mapAssets.length, vectorTiles: vectors.length,
-           vectorSources, countryRequests: country.length,
-           countrySettledMs: country.length ? +Math.max(...country.map(end)).toFixed(0) : null,
+           vectorSources, countryRequests: window.__countryRequests || 0,
+           countrySettledMs: window.__countrySettledMs == null
+             ? null : +window.__countrySettledMs.toFixed(0),
            origins: hosts.length,
            thirdParty: hosts.filter((h) => !h.startsWith('127.')),
            kb: +(r.reduce((a, x) => a + bytes(x), 0) / 1024).toFixed(1),
