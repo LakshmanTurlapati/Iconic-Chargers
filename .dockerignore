@@ -1,0 +1,19 @@
+# Send only deterministic build inputs to local or remote builders. This
+# allowlist keeps credentials, package-manager config, worktrees, screenshots,
+# caches, and future untracked files out of the context by default.
+**
+!Dockerfile
+!CITATION.cff
+!DATA-RIGHTS.md
+!data/
+!data/iconic-badges.json
+!data/seo-slugs.json
+!deploy/
+!deploy/indexnow-key.txt
+!deploy/nginx.conf
+!scripts/
+!scripts/build_site.mjs
+!scripts/seo-copy.mjs
+!scripts/verify_site_output.mjs
+!web/
+!web/**

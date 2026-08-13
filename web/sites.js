@@ -5,9 +5,9 @@ window.ICONIC = {
  "badge_count": 40,
  "site_count": 53,
  "coordinate_datum": "WGS84 (decimal degrees)",
- "badge_source": "Tesla app > Charging > Badges (user-supplied, as of snapshot_date)",
+ "badge_source": "Tesla app > Charging > Badges (user-supplied, as of 2026-08-12)",
  "site_source": "https://supercharge.info/service/supercharge/allSites",
- "notes": "Iconic Chargers is a Tesla app feature: charging at one of these Superchargers earns a collectable badge. Tesla publishes the list only in-app, so the badge names here were read from the app on snapshot_date. A badge can cover more than one Supercharger. Sites marked confidence 'approx' are this project's best match for the badge and are not confirmed against the app.",
+ "notes": "Iconic Chargers is a Tesla app feature: charging at one of these Superchargers earns a collectable badge. Tesla publishes the list only in-app, so the badge names here were read from the app on 2026-08-12. A badge can cover more than one Supercharger. Sites marked confidence 'approx' are this project's best match for the badge and are not confirmed against the app.",
  "regions": [
   "North America",
   "Europe",

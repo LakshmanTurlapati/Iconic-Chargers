@@ -1,6 +1,9 @@
 # Upstream snapshot, ~6 MB — refetch with the curl command in README.md
 data/allSites.json
 
+# Deterministic deployment output; regenerate with scripts/build_site.mjs.
+.site/
+
 __pycache__/
 *.pyc
 .DS_Store
