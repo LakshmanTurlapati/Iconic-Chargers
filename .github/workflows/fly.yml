@@ -15,25 +15,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  verify:
-    name: Generate and verify
-    runs-on: ubuntu-latest
+  browser:
+    name: Browser and site verification
+    runs-on: macos-15
     timeout-minutes: 30
     env:
-      CHROME_BIN: /tmp/iconic-google-chrome
+      CHROME_BIN: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
-
-      - name: Configure Chrome for CI
-        run: |
-          printf '%s\n' '#!/bin/sh' \
-            'exec /usr/bin/google-chrome --no-sandbox --disable-dev-shm-usage --remote-debugging-address=127.0.0.1 "$@"' \
-            > "$CHROME_BIN"
-          chmod 0755 "$CHROME_BIN"
-          "$CHROME_BIN" --version
 
       - name: Generate deterministic site
         run: node scripts/build_site.mjs
@@ -74,6 +66,21 @@ jobs:
           server_pid=$!
           trap 'kill "$server_pid"' EXIT
           node scripts/bench.mjs http://127.0.0.1:8731/ --cpu=6
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: generated-site
+          path: .site
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  image:
+    name: Production image verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Build and smoke-test production image
         run: |
@@ -150,13 +157,19 @@ jobs:
             http://127.0.0.1:8080/indexnow-key.txt | grep --quiet --fixed-strings \
             "$(tr -d '\r\n' < deploy/indexnow-key.txt)"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: generated-site
-          path: .site
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 1
+  verify:
+    name: Generate and verify
+    if: always()
+    needs: [browser, image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every verification job
+        env:
+          BROWSER_RESULT: ${{ needs.browser.result }}
+          IMAGE_RESULT: ${{ needs.image.result }}
+        run: |
+          test "$BROWSER_RESULT" = success
+          test "$IMAGE_RESULT" = success
 
   deploy:
     name: Deploy production
