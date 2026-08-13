@@ -604,6 +604,19 @@
      at desktop width, and env() is 0 on any display without insets. */
 
   @media (max-width: 820px) {
+    /* Mobile has no room for secondary project chrome. The desktop footer
+       remains the permanent home for the capacity note and project links. */
+    .foot { display: none; }
+
+    /* Once details open, they are the phone's only card. visibility rather
+       than display preserves the list sheet's measured geometry: the global
+       overview floor and responsive detents still derive from its resting
+       footprint while its query, scroll and detent state stay untouched. */
+    body.is-detail-open #panel {
+      visibility: hidden;
+      pointer-events: none;
+    }
+
     /* iOS zooms the page in whenever a focused input is under 16px and does not
        zoom back out afterwards. This single value is the difference between a
        working search field and a permanently magnified app. */
@@ -794,7 +807,6 @@
        rows; the region filter is the first thing to go when height is this
        scarce. Search still reaches every region. */
     .chips { display: none; }
-    .foot { display: none; }
   }
 
   /* Direction follows the interface locale, while canonical place names and
@@ -947,9 +959,21 @@ document.addEventListener("DOMContentLoaded", function () {
   var LOCALE_KEY = "iconic.locale.v1";
   var COUNTRY_KEY = "iconic.country.v1";
   var COUNTRY_TTL = 6 * 60 * 60 * 1000;
+  var CONTEXT_MAX_ZOOM = 5;
+  // country.is returns ISO alpha-2 codes, while the source register keeps its
+  // own canonical English names. Keep that adapter inside the map app rather
+  // than changing the published charger datasets just to support a viewport.
+  var SITE_COUNTRY_BY_CODE = {
+    AU: "Australia", CA: "Canada", CN: "China", CZ: "Czech Republic",
+    DE: "Germany", ES: "Spain", FR: "France", GB: "United Kingdom",
+    IL: "Israel", IT: "Italy", JP: "Japan", KR: "South Korea",
+    NL: "Netherlands", NO: "Norway", NZ: "New Zealand", TR: "Turkey",
+    TW: "Taiwan", US: "USA"
+  };
   // Generated production entry points define this value before the app loads.
   // Its presence distinguishes a stable locale URL from direct-file and legacy
-  // /web/index.html use, both of which retain automatic browser/IP selection.
+  // /web/index.html use. Country detection is shared; only the latter may let
+  // that result refine the interface language automatically.
   var staticSite = Object.prototype.hasOwnProperty.call(window, "ICONIC_PATH_LOCALE");
 
   function storageGet(kind, key) {
@@ -994,8 +1018,8 @@ document.addEventListener("DOMContentLoaded", function () {
     storageSet("sessionStorage", COUNTRY_KEY, null);
     return null;
   }
-  // A saved language suppresses the network lookup, but a still-valid country
-  // cache may continue to drive units; language and units are independent.
+  // Language and country are independent: a saved/path locale fixes copy,
+  // while a valid country cache still drives units and the startup camera.
   var ipCountry = cachedCountry();
   var localeKey = localeOverride || (ipCountry ? localeForCountry(ipCountry) : browserLocale);
   var locale = LOCALES[localeKey] || LOCALES.en;
@@ -1073,12 +1097,35 @@ document.addEventListener("DOMContentLoaded", function () {
   var here = null;        // {lat, lng} once Near me is granted -- never on load
   var distKm = {};        // badge -> km to its NEAREST site
   var order = null;       // badge names by distance, or null for region order
+  // Country framing is a bootstrap default, not an instruction that may take
+  // the camera back after the visitor has expressed any other intent.
+  var startupCountryFocusPending = true;
+  var cameraMoveToken = 0;
+  var automaticCameraMoving = false;
+  function claimCamera() {
+    startupCountryFocusPending = false;
+    if (!automaticCameraMoving) return;
+    automaticCameraMoving = false;
+    cameraMoveToken++;
+    if (map) map.stop();
+  }
 
   // Both looked up here rather than beside the rest of the detail-card code:
   // framePad() below runs on the very first fitBounds, and a `var` hoisted but
   // not yet assigned would be undefined at that point.
   var panelEl = document.getElementById("panel");
   var detailEl = document.getElementById("detail");
+
+  // The list card is an interaction surface in its own right. Capture intent
+  // before child controls run so their own region/badge camera can still start
+  // afterwards, while a late country response cannot replace it. Pointer and
+  // touch cover sheet gestures, wheel covers scrolling without a preceding
+  // press, and click/keydown retain the same contract for assistive input.
+  panelEl.addEventListener("pointerdown", claimCamera, { capture: true, passive: true });
+  panelEl.addEventListener("touchstart", claimCamera, { capture: true, passive: true });
+  panelEl.addEventListener("wheel", claimCamera, { capture: true, passive: true });
+  panelEl.addEventListener("keydown", claimCamera, { capture: true });
+  panelEl.addEventListener("click", claimCamera, { capture: true });
 
   // The single source of truth for which of the three layouts is live. These
   // are the exact query strings the stylesheet uses, because deriving the mode
@@ -1212,6 +1259,14 @@ document.addEventListener("DOMContentLoaded", function () {
         constrainedMaxZoom = +zoom;
         return setMaxZoom.call(this, zoom);
       };
+      // Pointer, wheel, keyboard and control-button input all make the current
+      // camera the visitor's choice. A country response arriving afterwards
+      // may still update locale/units, but must never take that camera back.
+      var mapContainer = map.getContainer();
+      mapContainer.addEventListener("pointerdown", claimCamera, { passive: true });
+      mapContainer.addEventListener("touchstart", claimCamera, { passive: true });
+      mapContainer.addEventListener("wheel", claimCamera, { passive: true });
+      mapContainer.addEventListener("keydown", claimCamera);
     } catch (e) {
       showMapError("webglError");
       map = null;
@@ -1338,6 +1393,58 @@ document.addEventListener("DOMContentLoaded", function () {
       map.jumpTo(camera);
     }
     return camera;
+  }
+
+  // Every automatic flight has a deterministic landing. Besides making
+  // hidden-tab navigation reliable, the token prevents an older timeout from
+  // snapping the camera back after a newer chip or badge selection.
+  function moveCamera(camera, animate, duration) {
+    if (!map || !camera) return false;
+    var token = ++cameraMoveToken;
+    var done = false;
+    automaticCameraMoving = false;
+    map.stop();
+    automaticCameraMoving = true;
+
+    function land() {
+      if (done || token !== cameraMoveToken) return;
+      done = true;
+      automaticCameraMoving = false;
+      map.stop();
+      map.jumpTo(camera);
+    }
+
+    if (!animate || document.hidden) { land(); return true; }
+    var ms = duration || 700;
+    map.once("moveend", land);
+    map.flyTo(Object.assign({ duration: ms }, camera));
+    setTimeout(land, Math.max(1400, ms * 2));
+    return true;
+  }
+
+  function cameraForContextSites(sites, padding) {
+    if (!map || !sites || !sites.length) return null;
+    var pad = Object.assign({}, padding || activeFramePad());
+    // Match the overview's two-pixel rounding allowance so an extremal pin is
+    // not technically outside the unobscured frame on a fractional DPR.
+    Object.keys(pad).forEach(function (edge) { pad[edge] += 2; });
+    return map.cameraForBounds(boundsForSites(sites), {
+      padding: pad, maxZoom: Math.min(CONTEXT_MAX_ZOOM, map.getMaxZoom())
+    });
+  }
+
+  function sitesInCountry(code) {
+    var name = SITE_COUNTRY_BY_CODE[code];
+    return name ? DATA.sites.filter(function (site) { return site.country === name; }) : [];
+  }
+
+  function focusStartupCountry(code, animate) {
+    if (!startupCountryFocusPending) return false;
+    // Success, no matching charger, or an unavailable map all consume this
+    // one bootstrap opportunity; later language actions never refocus it.
+    startupCountryFocusPending = false;
+    var camera = cameraForContextSites(sitesInCountry(code), overviewPad());
+    return moveCamera(camera, animate, 700);
   }
 
   /* -------------------------------------------------------- basemap tint ---
@@ -1747,10 +1854,12 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   function showAll() {
+    claimCamera();
     active = new Set(REGIONS);
     allRegions = true;
     syncChips();
     render();
+    frameVisibleRegions();
   }
 
   var allChip = document.createElement("button");
@@ -1769,6 +1878,7 @@ document.addEventListener("DOMContentLoaded", function () {
     b.dataset.region = region;
     b.textContent = regionName(region);
     b.addEventListener("click", function () {
+      claimCamera();
       // Additive, which is what an explicit All chip implies: the first tap
       // narrows to that region, further taps add regions, and un-ticking the
       // last one falls back to All rather than showing nothing.
@@ -1783,6 +1893,7 @@ document.addEventListener("DOMContentLoaded", function () {
       if (active.size === 0 || active.size === REGIONS.length) { showAll(); return; }
       syncChips();
       render();
+      frameVisibleRegions();
     });
     filtersEl.appendChild(b);
     regionChip[region] = b;
@@ -1817,6 +1928,23 @@ document.addEventListener("DOMContentLoaded", function () {
       if (!active.has(b.region)) return false;
       return !q || HAY[b.badge].indexOf(q) !== -1;
     });
+  }
+
+  function frameVisibleRegions() {
+    if (!map) return;
+    var rows = visible();
+    if (!rows.length) return;
+    var camera;
+    if (allRegions && !query.trim() && rows.length === BADGES.length) {
+      camera = syncOverviewFloor(false);
+    } else {
+      var sites = [];
+      rows.forEach(function (badge) {
+        Array.prototype.push.apply(sites, sitesOf[badge.badge]);
+      });
+      camera = cameraForContextSites(sites, activeFramePad());
+    }
+    moveCamera(camera, true, 700);
   }
 
   // The list is built once and then shown/hidden. Re-parsing 40 rows of
@@ -2095,22 +2223,24 @@ document.addEventListener("DOMContentLoaded", function () {
   dSites.addEventListener("click", function (e) {
     var btn = e.target.closest(".srow");
     if (!btn || !selected) return;
+    claimCamera();
     var s = sitesOf[selected][+btn.dataset.i];
     renderDetail(byName[selected], s);
     if (map) {
       var camera = cameraForSites([s],
         Math.max(map.getZoom(), zoomFor3D([s.longitude, s.latitude])));
-      if (camera) map.flyTo(Object.assign({ duration: 600 }, camera));
+      moveCamera(camera, true, 600);
     }
   });
 
   var dBody = detailEl.querySelector(".dbody");
 
-  // The list stays put underneath. Opening this used to swap the panel's whole
-  // contents, which cost you your place in the list every time you looked at
-  // anything.
+  // The list stays intact. On a phone CSS hides it while this card is open;
+  // desktop keeps both cards visible, and closing restores the phone sheet at
+  // the exact query, scroll position and detent it already held.
   function showDetail(badge, site) {
     renderDetail(badge, site);
+    document.body.classList.add("is-detail-open");
     detailEl.hidden = false;
     dBody.scrollTop = 0;
     // Instantly, not animated: frame() measures this card as an obstacle the
@@ -2122,6 +2252,9 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   function closeDetail(refocus) {
+    // Clear this even if the detail is already hidden, so any indirect close
+    // path cannot strand the mobile list in its suppressed visual state.
+    document.body.classList.remove("is-detail-open");
     if (detailEl.hidden) return;
     detailEl.hidden = true;
     // Next open starts from the middle detent rather than wherever this one was
@@ -2487,9 +2620,8 @@ document.addEventListener("DOMContentLoaded", function () {
     if (name && rowEl[name]) rowEl[name].scrollIntoView({ block: "nearest" });
   }
 
-  // The animation is a nicety, never the mechanism: a hidden tab pauses
-  // requestAnimationFrame, so a flight started there would never land and the
-  // card would describe a place the map never reached. Landing is always forced.
+  // The animation is a nicety, never the mechanism: moveCamera() always forces
+  // the requested landing even when a hidden tab pauses requestAnimationFrame.
   function frame(name, site) {
     var group = marks[name];
     // Open the card BEFORE measuring: framePad() treats it as an obstacle, and
@@ -2510,24 +2642,12 @@ document.addEventListener("DOMContentLoaded", function () {
       // MapLibre's 512px world makes this one level lower than the old Leaflet
       // target while preserving the same visible ground scale.
       : cameraForSites(group.map(function (m) { return m.site; }), 8);
-    if (!camera) return;
-    var done = false;
-
-    function land() {
-      if (done) return;
-      done = true;
-      map.stop();
-      map.jumpTo(camera);
-    }
-
-    if (document.hidden) { land(); return; }
-    map.once("moveend", land);
-    map.flyTo(Object.assign({ duration: 700 }, camera));
-    setTimeout(land, 1400);
+    moveCamera(camera, true, 700);
   }
 
   function select(name, fly, site) {
     if (!marks[name]) return;
+    claimCamera();
     if (location.hash.slice(1) !== encodeURIComponent(name)) {
       try { history.replaceState(null, "", "#" + encodeURIComponent(name)); } catch (e) {}
     }
@@ -2541,11 +2661,13 @@ document.addEventListener("DOMContentLoaded", function () {
   var clearEl = document.getElementById("clear");
 
   qEl.addEventListener("input", function (e) {
+    claimCamera();
     query = e.target.value;
     clearEl.hidden = !query;
     scheduleRender();
   });
   clearEl.addEventListener("click", function () {
+    claimCamera();
     qEl.value = ""; query = ""; clearEl.hidden = true;
     qEl.focus();
     scheduleRender();
@@ -2565,6 +2687,7 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   nearEl.addEventListener("click", function () {
+    claimCamera();
     if (here) {                                   // toggle back to region order
       here = null; order = null; distKm = {};
       nearEl.setAttribute("aria-pressed", "false");
@@ -2631,6 +2754,7 @@ document.addEventListener("DOMContentLoaded", function () {
   }
   // Typing is the one moment the list matters more than the map.
   qEl.addEventListener("focus", function () {
+    claimCamera();
     if (sheetMode()) sheetSnap(panelSheet, "full");
   });
 
@@ -2874,16 +2998,15 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   }
 
-  function stopCountryLookup() {
-    clearTimeout(countryTimer);
-    countryTimer = 0;
-    if (countryController) countryController.abort();
-    countryController = null;
-  }
   function lookupCountry() {
-    if (localeOverride || ipCountry || countryController || !window.fetch || !window.AbortController) return;
+    if (ipCountry || countryController) return;
+    if (!window.fetch || !window.AbortController) {
+      startupCountryFocusPending = false;
+      return;
+    }
     countryController = new AbortController();
     var controller = countryController;
+    var accepted = false;
     countryTimer = setTimeout(function () { controller.abort(); }, 1500);
     fetch("https://api.country.is/", {
       credentials: "omit",
@@ -2893,20 +3016,32 @@ document.addEventListener("DOMContentLoaded", function () {
       if (!response.ok) throw new Error("country lookup failed");
       return response.json();
     }).then(function (body) {
-      if (localeOverride || controller !== countryController) return;
+      if (controller !== countryController) return;
       var country = body && typeof body.country === "string" ? body.country.toUpperCase() : "";
       if (!/^[A-Z]{2}$/.test(country)) return;
+      accepted = true;
       ipCountry = country;
       MILES = country === "US";
       storageSet("sessionStorage", COUNTRY_KEY, JSON.stringify({
         country: country, expires: Date.now() + COUNTRY_TTL
       }));
-      applyLocale(localeForCountry(country));
+      // A path or saved locale remains authoritative. Automatic mode may still
+      // refine language, while every mode shares country-aware units/framing.
+      if (!localeOverride) {
+        applyLocale(localeForCountry(country));
+      } else if (here) {
+        render(true);
+        if (selected && !detailEl.hidden) {
+          renderDetail(byName[selected], selectedSite || sitesOf[selected][0]);
+        }
+      }
+      focusStartupCountry(country, true);
     }).catch(function () {
-      // Language negotiation is an enhancement; browser language remains live
-      // when the service is blocked, slow, offline, or returns malformed data.
+      // Country framing and language negotiation are enhancements; the world
+      // overview and immediate locale remain live on every provider failure.
     }).then(function () {
       if (controller !== countryController) return;
+      if (!accepted) startupCountryFocusPending = false;
       clearTimeout(countryTimer);
       countryTimer = 0;
       countryController = null;
@@ -2914,12 +3049,14 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   languageEl.addEventListener("change", function () {
+    claimCamera();
     var choice = languageEl.value;
     if (choice === "auto") {
       if (staticSite) {
         localeOverride = I18N.defaultLocale;
         syncLocaleUrl(I18N.defaultLocale);
         applyLocale(I18N.defaultLocale);
+        lookupCountry();
         return;
       }
       localeOverride = null;
@@ -2932,7 +3069,6 @@ document.addEventListener("DOMContentLoaded", function () {
       return;
     }
     if (!Object.prototype.hasOwnProperty.call(LOCALES, choice)) return;
-    stopCountryLookup();
     localeOverride = choice;
     syncLocaleUrl(choice);
     storageSet("localStorage", LOCALE_KEY, choice);
@@ -2963,9 +3099,11 @@ document.addEventListener("DOMContentLoaded", function () {
   // after render() has completed layout, and before a deep link can select a
   // site and replace the overview with its own framing.
   if (map) syncOverviewFloor(true);
+  if (ipCountry) focusStartupCountry(ipCountry, false);
 
   // #<badge name> deep-links, so a specific badge is shareable.
-  function openFromHash() {
+  function openFromHash(event) {
+    if (event || location.hash) claimCamera();
     var name;
     try { name = decodeURIComponent(location.hash.slice(1)); } catch (e) { name = ""; }
     if (name && marks[name]) { select(name, true); return; }

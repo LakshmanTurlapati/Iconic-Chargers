@@ -78,12 +78,15 @@ wins over saved or browser language, and changing the selector replaces only tha
 preserving the query, badge hash and live map state. Direct `file://` use retains the automatic
 selection flow above.
 
-Automatic mode calls only [`https://api.country.is/`](https://country.is/), with no credentials or referrer and a
-1.5-second abort timeout. Only a validated two-letter country code is retained, for six hours in
-`sessionStorage`; the returned IP is discarded. There is no second provider, and a blocked, slow,
-offline or malformed response silently leaves the immediate browser-language result intact. The
-service is keyless and describes itself as non-logging, but has no availability SLA; VPNs and IP
-location can also be wrong. This is only a default because, as the
+When no valid country cache exists, every entry point calls only
+[`https://api.country.is/`](https://country.is/), with no credentials or referrer and a 1.5-second
+abort timeout. Only a validated two-letter country code is retained, for six hours in
+`sessionStorage`; the returned IP is discarded. Published paths and saved choices keep their
+explicit interface language, while Automatic mode may also use the result for language selection.
+There is no second provider, and a blocked, slow, offline or malformed response silently retains
+the world overview and immediate locale. The service is keyless and describes itself as
+non-logging, but has no availability SLA; VPNs and IP location can also be wrong. This is only a
+default because, as the
 [W3C notes](https://www.w3.org/International/questions/qa-site-conneg.en.html), physical location
 does not reliably identify reading language.
 
@@ -91,6 +94,12 @@ Units follow detected country rather than UI language: a US result uses miles an
 country uses kilometres. If lookup fails, `en-US` retains the previous miles fallback. Changing the
 language selector never changes units. Automatic language detection does **not** request browser
 geolocation; the existing Near Me button remains the only precise-location permission flow.
+
+The same coarse country result gives the map a useful starting camera without filtering anything:
+it frames that country's Iconic Chargers at no closer than z5, keeps `All` and all 53 markers live,
+and leaves the all-sites view as the zoom-out floor. Countries with no charger in this dataset stay
+at the world overview. A late response is ignored for framing after any user interaction. Region
+chips similarly frame the currently visible charger set after each additive filter change.
 
 ---
 
@@ -129,7 +138,7 @@ Whistler (2 each).
 | 🔎 **Search** | badge name, Supercharger name, city, country, why it's badged, or anything in the write-up |
 | 🏷️ **Filter** | `All` plus the four regions, additive |
 | 📍 **Near me** | opt-in — sorts by distance to each badge's *nearest* Supercharger |
-| 🪪 **Detail card** | opens opposite the list — stats, why, every Supercharger, coordinates, links. `×` or `Esc` closes |
+| 🪪 **Detail card** | opens opposite the list on desktop and replaces it visually on phones — stats, why, every Supercharger, coordinates, links. `×` or `Esc` closes |
 | 🔗 **Multi-site** | selecting a badge frames **all** its Superchargers at once |
 | 🔖 **Deep links** | `web/index.html#Great%20Barrier%20Reef` |
 
@@ -189,8 +198,8 @@ the number of draw calls.
 The map is the substrate — full-bleed, edge to edge — and everything else floats on it as rounded,
 blurred cards, the way the car does it. Search sits on the **right**; picking a badge opens a detail
 card **opposite it, on the left**, so the list keeps its place and its scroll position instead of
-being swapped out from under you. On a phone both become draggable sheets — see
-[On a phone](#on-a-phone).
+being swapped out from under you. On a phone they use the same footprint and only the active card
+is visible — see [On a phone](#on-a-phone).
 
 Three things that reading Tesla's actual conventions changed:
 
@@ -244,8 +253,8 @@ apart:
 The third exists because a landscape phone is under 820px wide and so used to get the bottom sheet,
 which left a 115px strip of map — and with the detail card open, asked `cameraForBounds` for **333px
 of padding inside 375px of viewport**, which is not a camera. It docks to the right instead, and the
-detail card overlays it rather than taking the opposite edge: two 340px cards on a 667px screen
-would leave 23px of map between them.
+detail card uses its footprint while the search/list card is hidden: two 340px cards on a 667px
+screen would leave 23px of map between them.
 
 **The sheet has three detents**, and the interesting one is FULL. It is bounded by the *control
 column*, measured live, rather than by a percentage — which makes "the zoom buttons and the
@@ -253,6 +262,9 @@ attribution are reachable" true at every detent by construction rather than by a
 matters because the attribution is a licence requirement, and the first version of this layout hid
 it behind the sheet. On a 430×900 phone the three land at **147 / 434 / 720px**. PEEK is measured
 from where the search field actually ended up, since the header wraps differently at every width.
+Selecting a charger hides the search/list sheet on both portrait and landscape phones so the detail
+card is the only card visible; closing the detail restores the same query, scroll position and
+detent. The capacity note and project-link footer are desktop-only.
 
 Dragging moves the sheet with a `transform` and the resting state is a real `height`. Both halves
 are load-bearing: animating height reflows the scroll container every frame, while a resting
@@ -377,10 +389,11 @@ A three-run cold-cache baseline at 6× CPU on simulated 4G:
 | Five search updates, synchronous work | 0.5 ms |
 
 The vector renderer is deliberately heavier than the former raster map: it pays for the GL runtime,
-style, glyphs and decoded geometry before the first complete map. Automatic mode adds
-`api.country.is` as the only additional origin; a saved language choice skips that request. The map
-still reuses the style's single vector source for 3D, so the building layer does not duplicate tile
-downloads. Search continues to reconcile only changed markers and persistent list rows.
+style, glyphs and decoded geometry before the first complete map. With no six-hour cache,
+`api.country.is` is the only additional origin regardless of language choice; it never blocks the
+first render. The map still reuses the style's single vector source for 3D, so the building layer
+does not duplicate tile downloads. Search continues to reconcile only changed markers and
+persistent list rows.
 
 ### Continuous zoom
 

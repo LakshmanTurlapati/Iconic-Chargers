@@ -108,8 +108,12 @@ await send("Page.enable");
 await send("Runtime.enable");
 await send("Page.addScriptToEvaluateOnNewDocument", { source: `
   // Documentation is deterministic regardless of the machine or IP running
-  // it, and a saved choice suppresses the country request entirely.
+  // it. Brazil has no charger in this atlas, so its valid cached code keeps
+  // the intentional world overview without making an external lookup.
   try { localStorage.setItem('iconic.locale.v1', 'en'); } catch (e) {}
+  try { sessionStorage.setItem('iconic.country.v1', JSON.stringify({
+    country:'BR', expires:Date.now()+21600000
+  })); } catch (e) {}
   Object.defineProperty(window, 'maplibregl', {
     configurable: true,
     set: function (v) {
