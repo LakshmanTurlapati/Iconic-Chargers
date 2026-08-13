@@ -2,23 +2,27 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover lets the map bleed under a notch and the home indicator,
+     which is the whole point of a full-bleed map. It also switches env(safe-area-inset-*)
+     on: without cover iOS letterboxes the page and every inset reports 0, so the
+     insets used below would silently do nothing. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
 <title>Tesla Iconic Charger badges — world map</title>
 
-<!-- Tiles are the long pole once the script is local, so open the connection
-     while the HTML is still parsing. Deliberately NO crossorigin: Leaflet
-     requests tiles as plain no-CORS <img>, and a CORS-mode preconnect would
-     sit unused while the browser opened a second connection anyway. -->
-<link rel="preconnect" href="https://basemaps.cartocdn.com">
+<!-- Style, glyphs, sprites and vector tiles all come from this one origin. The
+     requests use CORS, so the preconnect has to use the same credentials mode. -->
+<link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
 
 <!-- Vendored rather than CDN-loaded. Browsers partition the HTTP cache by
      top-level site, so a shared CDN copy is never reused across sites -- the
      third-party origin buys nothing and costs a DNS + TLS round trip that
-     blocks map init. Both files are byte-identical to unpkg's leaflet@1.9.4
-     (verified against the SRI hashes this page used to pin). -->
-<link rel="stylesheet" href="vendor/leaflet.css">
-<script defer src="vendor/leaflet.js"></script>
+     blocks map init. These are the classic browser builds from MapLibre GL JS
+     5.24.0; v6 is ESM-only and cannot preserve direct file:// use. -->
+<link rel="stylesheet" href="vendor/maplibre-gl.css">
+<script defer src="vendor/maplibre-gl.js"></script>
 <script defer src="sites.js"></script>
+<script defer src="locales.js"></script>
 <style>
   :root {
     color-scheme: dark;
@@ -26,17 +30,22 @@
     --surface-1:      #131313;
 
     /* The panel floats over the basemap, so "background" is a composite, not a
-       constant. dark_all lands between #16 and #2a under a 22px blur, so every
-       ratio below is quoted against #2a2a2a -- the worst case, a dense cluster
-       of map labels smeared beneath the panel. On plain dark map they are far
-       better. */
+       constant. Sampled from a real screenshot over downtown Los Angeles --
+       the densest roads and labels this map ever puts behind the panel -- the
+       composite runs from #151515 typical to #323232 at its lightest pixel.
+       Every ratio below is quoted against that #323232 worst case, so they are
+       floors rather than averages.
+       --text-muted was #999999, which lands at exactly 4.50:1 there: passing,
+       but with no margin left. Lifting the basemap out of near-black is what
+       raised that composite, so the margin is restored here rather than
+       spent. */
     --panel:          #141414d6;
     --panel-solid:    #141414;
     --edge:           #ffffff17;
 
-    --text-primary:   #ffffff;   /* 14.4:1 */
-    --text-secondary: #b9b9b9;   /*  7.3:1 */
-    --text-muted:     #999999;   /*  5.0:1 */
+    --text-primary:   #ffffff;   /* 12.8:1 */
+    --text-secondary: #b9b9b9;   /*  6.5:1 */
+    --text-muted:     #a0a0a0;   /*  4.9:1 */
 
     /* Tesla reserves its blue for the primary action alone, and the ratios
        agree with the convention: #3e6ae1 is 3.9:1 on the panel -- fine for a
@@ -46,10 +55,28 @@
     --accent:         #3e6ae1;
     --accent-ring:    #5b82f0;
 
-    /* Map pin, styled after Tesla's own Supercharger marker.
-       Gold on the dark basemap: 9.35:1 over water, 8.03:1 over land.
-       Bolt on gold: 7.59:1. Swap --pin-gold to #d4af37 for antique gold. */
-    --pin-gold: #e8b923;
+    /* Map pin, styled after Tesla's own Supercharger marker. Against the
+       basemap ramp below, quoted at the gradient's DARKEST end because that is
+       the floor: 7.5:1 over water, 6.6:1 over land, 5.1:1 over a 2D building
+       footprint, 3.6:1 over a minor road.
+
+       Two backdrops the gold cannot carry alone, and both are reachable: 2.0:1
+       on a motorway, and 1.66:1 on the brightest #787876 extrusion face. The
+       1.5px --pin-edge ring is what carries separation in both cases, at
+       3.28:1 on the motorway and 3.89:1 on that building face, so the pin
+       remains distinct where the gold alone cannot carry the boundary. Do not
+       drop the ring.
+
+       The capsule is lit from above rather than flat-filled -- a slight
+       gradient is what stops a solid pill from reading as a sticker. The bolt
+       and digits have to clear 4.5:1 against the DARKEST end of that gradient,
+       not its average, so --pin-gold-lo is the value that actually constrains
+       it: 5.27:1 there, 7.57:1 at the top. --pin-gold itself stays the flat
+       mid-tone, used as the fallback fill and the selected glow. */
+    --pin-gold:    #d4af37;   /* flat fill / glow -- bolt on it: 6.65:1 */
+    --pin-gold-hi: #e0bb45;   /* top of the capsule   -- bolt: 7.57:1 */
+    --pin-gold-lo: #c09a2e;   /* bottom, the binding constraint -- bolt: 5.27:1 */
+    --pin-fill:    linear-gradient(180deg, var(--pin-gold-hi), var(--pin-gold-lo));
     --pin-bolt: #2c2c2a;
     --pin-edge: #1b1b1b;
 
@@ -63,6 +90,19 @@
 
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
+  /* iOS resolves 100% against the LARGE viewport -- the one with the URL bar
+     retracted -- so a full-height map is taller than what you can actually see
+     until you scroll. dvh tracks the viewport as the bar collapses. Desktop is
+     unaffected: with no dynamic toolbar, 100dvh and 100% are the same number. */
+  @supports (height: 100dvh) {
+    html, body { height: 100dvh; }
+  }
+  html {
+    /* Stops iOS inflating body text when a phone is turned to landscape, which
+       would break every measured line-length and touch target below. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
 
   body {
     background: var(--page);
@@ -70,52 +110,74 @@
     font: 400 14px/1.45 var(--font);
     -webkit-font-smoothing: antialiased;
     overflow: hidden;
+    /* The grey flash mobile browsers paint over a tapped control. Every control
+       here already has its own :active/:hover treatment, so this is redundant
+       ink on top of a considered one. Inert on desktop. */
+    -webkit-tap-highlight-color: transparent;
   }
+
+  /* Set by the visualViewport watcher: the height of the on-screen keyboard, or
+     0 when there is none -- which is always, on desktop. */
+  :root { --kb: 0px; }
 
   /* ------------------------------------------------------------ the map --- */
   /* Full-bleed: the map is the substrate and everything else floats on it. */
   #map { position: absolute; inset: 0; background: var(--surface-1); }
-  .leaflet-container { background: var(--surface-1); font: inherit; }
+  .maplibregl-map { background: var(--surface-1); font: inherit; }
 
-  /* Round floating controls, bottom-right, clear of the panel.
-     leaflet.css styles these with :first-child/:last-child/.leaflet-touch
-     selectors that outrank a plain `.leaflet-bar a`, so the overrides have to
-     match its specificity corner for corner rather than just come later. */
-  .leaflet-bar { border: 0 !important; box-shadow: none; }
-  .leaflet-bar a,
-  .leaflet-bar a:hover,
-  .leaflet-bar a:focus,
-  .leaflet-touch .leaflet-bar a {
-    width: 40px; height: 40px; line-height: 38px;
+  /* Tesla-like round controls. Each navigation action is its own floating
+     circle, including the compass that exposes bearing and automatic pitch. */
+  .maplibregl-ctrl-group {
+    display: flex; flex-direction: column; gap: 8px;
+    border: 0; background: none; box-shadow: none;
+  }
+  .maplibregl-ctrl-group button,
+  .maplibregl-ctrl-group button:hover,
+  .maplibregl-ctrl-group button:focus {
+    width: 40px; height: 40px;
     border: 1px solid var(--edge); border-radius: 50%;
     background: var(--panel);
     -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
-    color: var(--text-primary); font-size: 19px; font-weight: 400;
+    color: var(--text-primary);
   }
-  .leaflet-bar a:first-child,
-  .leaflet-bar a:last-child,
-  .leaflet-touch .leaflet-bar a:first-child,
-  .leaflet-touch .leaflet-bar a:last-child { border-radius: 50%; }
-  .leaflet-bar a:last-child { border-bottom: 1px solid var(--edge); }
-  .leaflet-bar a:first-child { margin-bottom: 8px; }
-  .leaflet-bar a:hover, .leaflet-bar a:focus { background: #262626e6; }
-  .leaflet-bar a.leaflet-disabled,
-  .leaflet-bar a.leaflet-disabled:hover { background: var(--panel); color: #5a5a5a; }
-  .leaflet-control-attribution {
+  .maplibregl-ctrl-group button + button { border-top: 1px solid var(--edge); }
+  /* :focus and :hover split apart. A touchscreen fires :hover on tap and then
+     keeps it until you tap something else, so every un-gated hover rule in this
+     file leaves a control stuck looking hovered. :focus is not affected and
+     stays unconditional -- a touch device with a keyboard still needs it.
+     Gating changes nothing on desktop: `hover: hover` is what a mouse reports,
+     and a media query does not alter specificity or source order. */
+  .maplibregl-ctrl-group button:focus { background: #262626e6; }
+  @media (hover: hover) {
+    .maplibregl-ctrl-group button:hover { background: #262626e6; }
+  }
+  .maplibregl-ctrl-group button:disabled { background: var(--panel); opacity: 0.45; }
+  .maplibregl-ctrl button .maplibregl-ctrl-icon { filter: invert(1); }
+  .maplibregl-ctrl-attrib {
     padding: 2px 8px; border-radius: 999px;
     background: #000000a6 !important; color: var(--text-muted) !important; font-size: 10px;
   }
-  .leaflet-control-attribution a { color: var(--text-secondary) !important; }
+  .maplibregl-ctrl-attrib a { color: var(--text-secondary) !important; }
+  .maplibregl-ctrl-attrib-button { filter: invert(1); }
   /* The panel owns the whole right edge, so nudge the bottom-right corner past
      it rather than leaving the zoom buttons and the attribution underneath. */
-  .leaflet-bottom.leaflet-right { margin-right: 388px; }   /* 372 panel + 16 gutter */
+  .maplibregl-ctrl-bottom-right { right: 388px; }   /* 372 panel + 16 gutter */
+
+  #map-error {
+    position: absolute; inset: 50% auto auto 50%; z-index: 3;
+    width: min(420px, calc(100% - 48px)); padding: 16px 18px;
+    transform: translate(-50%, -50%);
+    border: 1px solid var(--edge); border-radius: 14px;
+    background: #141414f2; color: var(--text-secondary);
+    box-shadow: 0 18px 50px #0000008c; text-align: center;
+  }
+  #map-error strong { display: block; margin-bottom: 4px; color: var(--text-primary); }
+  #map-error[hidden] { display: none; }
 
   /* ----------------------------------------------------------- the cards --- */
-  /* Both are siblings of #map, never children and never Leaflet controls. The
-     continuous-zoom handler is bound to map.getContainer(), so a wheel over a
-     sibling bubbles to <body> and cannot reach the map; nesting either inside
-     the map container would need disableScrollPropagation, and would silently
-     make these unscrollable the day someone forgot it. */
+  /* Both are siblings of #map, never children and never map controls. A wheel
+     over either sibling bubbles to <body>, not the map canvas, so the list and
+     detail card remain independently scrollable. */
   #panel, #detail {
     position: absolute; top: 16px; width: 372px;
     display: flex; flex-direction: column; overflow: hidden;
@@ -127,20 +189,37 @@
   }
   /* Search on the right, detail opposite it, so picking something never costs
      you your place in the list. */
-  #panel  { right: 16px; bottom: 16px; z-index: 1001; }  /* leaflet.css tops out at 1000 */
+  #panel  { right: 16px; bottom: 16px; z-index: 1001; }
   #detail { left: 16px; max-height: calc(100% - 32px); z-index: 1002; }
   /* display:flex outranks the UA's [hidden] rule -- the same trap as .item. */
   #detail[hidden] { display: none; }
   @supports not (backdrop-filter: blur(2px)) {
-    #panel, #detail, .leaflet-bar a, .leaflet-bar a:hover { background: #141414f5; }
+    #panel, #detail, .maplibregl-ctrl-group button { background: #141414f5; }
   }
 
   /* ------------------------------------------------------------- header --- */
   .head { padding: 18px 18px 12px; }
+  .title-row { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 14px; }
   h1 {
-    margin: 0 0 14px; font-size: 15px; font-weight: 500; letter-spacing: -0.01em;
+    flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 500;
+    letter-spacing: -0.01em;
   }
-  h1 span { display: block; margin-top: 3px; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+  h1 span { display: block; }
+  h1 #app-title { color: var(--text-primary); font-size: 15px; font-weight: 500; }
+  h1 #total { margin-top: 3px; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+  .language-select {
+    flex: none; max-width: 142px; height: 32px; padding: 0 26px 0 10px;
+    border: 1px solid var(--edge); border-radius: 999px;
+    background: #ffffff14; color: var(--text-secondary);
+    font: 500 11.5px/1 var(--font); cursor: pointer;
+  }
+  .language-select:focus-visible {
+    outline: 2px solid var(--accent-ring); outline-offset: 2px;
+  }
+  .sr-only {
+    position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
 
   .search { position: relative; display: flex; align-items: center; }
   .search .mag {
@@ -162,7 +241,10 @@
     border: 0; border-radius: 50%; background: #ffffff1a;
     color: var(--text-secondary); cursor: pointer;
   }
-  #clear:hover { background: #ffffff2b; color: var(--text-primary); }
+  @media (hover: hover) {
+    #clear:hover { background: #ffffff2b; color: var(--text-primary); }
+  }
+  #clear[hidden] { display: none; }
 
   .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
   .chip {
@@ -172,11 +254,15 @@
     font: 500 13px/1 var(--font); cursor: pointer;
     transition: background 120ms ease-out, color 120ms ease-out;
   }
-  .chip:hover { background: #ffffff26; color: var(--text-primary); }
+  @media (hover: hover) {
+    .chip:hover { background: #ffffff26; color: var(--text-primary); }
+  }
   /* Tesla's selected state is a light fill with dark text, not a tinted
      outline. aria-pressed keeps the existing multi-select semantics. */
   .chip[aria-pressed="true"] { background: #f2f2f2; color: #111111; }
-  .chip[aria-pressed="true"]:hover { background: #ffffff; }
+  @media (hover: hover) {
+    .chip[aria-pressed="true"]:hover { background: #ffffff; }
+  }
 
   .countrow {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
@@ -191,7 +277,9 @@
     background: transparent; color: var(--text-secondary);
     font: 500 12px/1 var(--font); cursor: pointer; white-space: nowrap;
   }
-  .near:hover:not(:disabled) { background: #ffffff14; color: var(--text-primary); }
+  @media (hover: hover) {
+    .near:hover:not(:disabled) { background: #ffffff14; color: var(--text-primary); }
+  }
   .near[aria-pressed="true"] { background: #f2f2f2; border-color: #f2f2f2; color: #111111; }
   .near:disabled { opacity: 0.55; cursor: default; }
   #nearmsg { margin: 8px 0 0; color: var(--text-muted); font-size: 11.5px; }
@@ -201,21 +289,24 @@
   #list { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 10px 14px; }
   .region-head {
     position: sticky; top: 0; z-index: 1;
-    margin: 10px 0 2px; padding: 8px 8px 6px;
+    margin: 0 0 2px; padding: 18px 8px 6px;
     background: var(--panel-solid); color: var(--text-muted);
     font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
   }
   .item {
     display: grid; grid-template-columns: 40px 1fr auto; align-items: center;
     gap: 12px; width: 100%;
+    scroll-margin-top: 44px;
     padding: 11px 8px;
     border: 0; border-radius: 12px;
-    background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+    background: none; color: inherit; font: inherit; text-align: start; cursor: pointer;
   }
   /* `display: grid` above outranks the UA's `[hidden] { display: none }`,
      so filtered-out rows need this or they stay on screen. */
   .item[hidden] { display: none; }
-  .item:hover { background: #ffffff12; }
+  @media (hover: hover) {
+    .item:hover { background: #ffffff12; }
+  }
   .item:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: -2px; }
   .item[aria-current="true"] { background: #ffffff1f; }
   .ico {
@@ -223,7 +314,13 @@
     width: 40px; height: 40px; border-radius: 12px;
     background: #ffffff14; color: var(--text-secondary);
   }
-  .item[aria-current="true"] .ico { background: var(--pin-gold); color: var(--pin-bolt); }
+  /* The selected row's icon echoes the pin, gradient and all, so the row and
+     the marker on the map read as the same object. */
+  .item[aria-current="true"] .ico {
+    background-color: var(--pin-gold);
+    background-image: var(--pin-fill);
+    color: var(--pin-bolt);
+  }
   .ico svg { fill: currentColor; display: block; }
   .txt { min-width: 0; }
   .nm {
@@ -236,7 +333,7 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .approx {
-    display: inline-block; margin-left: 7px; padding: 1px 6px; vertical-align: 1px;
+    display: inline-block; margin-inline-start: 7px; padding: 1px 6px; vertical-align: 1px;
     border-radius: 5px; background: #ffffff1a;
     color: var(--text-muted); font-size: 10px; font-weight: 500; letter-spacing: 0.03em;
   }
@@ -266,7 +363,9 @@
     border: 0; border-radius: 50%; background: #ffffff14;
     color: var(--text-primary); cursor: pointer;
   }
-  .iconbtn:hover { background: #ffffff26; }
+  @media (hover: hover) {
+    .iconbtn:hover { background: #ffffff26; }
+  }
   .iconbtn:focus-visible, .chip:focus-visible, .near:focus-visible,
   #clear:focus-visible, .btn:focus-visible, .srow:focus-visible {
     outline: 2px solid var(--accent-ring); outline-offset: 2px;
@@ -307,9 +406,11 @@
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
     width: 100%; padding: 10px 12px; margin-top: 4px;
     border: 0; border-radius: 10px; background: #ffffff0f;
-    color: var(--text-secondary); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+    color: var(--text-secondary); font: inherit; font-size: 13px; text-align: start; cursor: pointer;
   }
-  .srow:hover { background: #ffffff1f; color: var(--text-primary); }
+  @media (hover: hover) {
+    .srow:hover { background: #ffffff1f; color: var(--text-primary); }
+  }
   .srow[aria-current="true"] { background: #ffffff26; color: var(--text-primary); }
   .srow .sst { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
@@ -330,10 +431,14 @@
     color: var(--text-primary); font: 500 13.5px/1 var(--font);
     text-decoration: none; cursor: pointer;
   }
-  .btn:hover { background: #ffffff2b; }
+  @media (hover: hover) {
+    .btn:hover { background: #ffffff2b; }
+  }
   /* The one place the blue appears. White on it is 4.8:1. */
   .btn.primary { flex: 1; background: var(--accent); color: #ffffff; }
-  .btn.primary:hover { background: #3059cc; }
+  @media (hover: hover) {
+    .btn.primary:hover { background: #3059cc; }
+  }
 
   /* ------------------------------------------------------ Supercharger pill */
   /* Modelled on Tesla's map marker: a capsule holding a bolt and the charger
@@ -343,7 +448,11 @@
     display: inline-flex; align-items: center; gap: 3px;
     height: 24px; padding: 0 8px;
     border: 1.5px solid var(--pin-edge); border-radius: 999px;
-    background: var(--pin-gold);
+    /* Colour and gradient set separately, not via the shorthand: the shorthand
+       would reset background-color to transparent, losing both the no-gradient
+       fallback and the flat value that the colour audit in verify.mjs reads. */
+    background-color: var(--pin-gold);
+    background-image: var(--pin-fill);
     color: var(--pin-bolt);
     font: 600 12px/1 var(--font);
     font-variant-numeric: tabular-nums;
@@ -352,54 +461,334 @@
   }
   .cap svg { display: block; fill: var(--pin-bolt); flex: none; }
 
-  /* Only map markers are pinned to a coordinate. Leaflet drives the OUTER
-     element with translate3d(), so the centring transform lives on .cap. */
-  .pin { background: none; border: 0; width: auto !important; height: auto !important; }
-  .pin .cap {
-    position: absolute;
-    transform: translate(-50%, -50%);
-    transform-origin: 50% 50%;
+  /* MapLibre owns the outer element's transform. Scaling the child keeps the
+     marker viewport-aligned and centred while the camera pitches and rotates. */
+  .pin {
+    display: flex; align-items: center; justify-content: center;
+    width: auto; height: auto; padding: 0; border: 0; background: none;
+    cursor: pointer; direction: ltr;
   }
-  .leaflet-marker-icon.pin:hover .cap { transform: translate(-50%, -50%) scale(1.12); }
+  .pin .cap { transform: scale(1); transform-origin: 50% 50%; }
+  /* Left exactly where it was: this ties with `.pin.is-selected .cap` at (0,3,0),
+     so the selected 1.15 only beats this 1.12 by coming later in the file. */
+  @media (hover: hover) {
+    .pin:hover .cap { transform: scale(1.12); }
+  }
+  .pin.is-selected { z-index: 10; }
   .pin.is-selected .cap {
-    transform: translate(-50%, -50%) scale(1.15);
-    filter: drop-shadow(0 0 7px #e8b92399);
+    transform: scale(1.15);
+    filter: drop-shadow(0 0 7px #d4af3799);
   }
-
-  .leaflet-tooltip.tip {
-    padding: 6px 11px; border: 1px solid var(--edge); border-radius: 999px;
+  .pin:focus-visible { outline: none; }
+  .pin:focus-visible .cap { outline: 2px solid var(--accent-ring); outline-offset: 3px; }
+  .tip {
+    position: absolute; left: 50%; bottom: calc(100% + 9px);
+    padding: 6px 11px; transform: translateX(-50%) translateY(3px);
+    border: 1px solid var(--edge); border-radius: 999px;
     background: #000000e6; color: var(--text-primary);
-    font: 500 12.5px/1 var(--font); box-shadow: none;
+    font: 500 12.5px/1 var(--font); box-shadow: none; white-space: nowrap;
+    opacity: 0; pointer-events: none;
+    transition: opacity 90ms ease-out, transform 90ms ease-out;
   }
-  .leaflet-tooltip.tip::before { display: none; }
+  /* The worst of the stuck-hover cases, and the reason the gating above is not
+     merely tidiness: on a touchscreen this left a pin's name label stranded over
+     the map after every tap, until you happened to tap something else. */
+  .pin:focus-visible .tip {
+    opacity: 1; transform: translateX(-50%) translateY(0);
+  }
+  @media (hover: hover) {
+    .pin:hover .tip { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
 
-  /* -------------------------------------------------------------- narrow --- */
-  /* Bottom sheet, the way the car does it on a portrait screen. */
-  @media (max-width: 820px) {
-    #panel, #detail {
-      top: auto; left: 10px; right: 10px; bottom: 10px; width: auto;
-      border-radius: 20px;
+  /* A finger is about 44px across; the capsule is 24px tall and, for a
+     single-digit stall count, about 40px wide. Padding out the hit box keeps
+     every pin tappable without touching the drawn capsule -- and the pins are
+     the primary way into a badge, so this is not a marginal target. */
+  @media (pointer: coarse) {
+    /* Never set `position` on .pin. This element IS the MapLibre marker -- it
+       carries `class="pin maplibregl-marker ..."` -- and MapLibre positions
+       markers with `.maplibregl-marker { position: absolute }`, which is the
+       same (0,1,0) specificity as `.pin`. This stylesheet loads after the
+       vendor one, so anything declared here WINS: a `position: relative` added
+       for the pseudo-element below dropped all 53 markers into normal document
+       flow, and MapLibre's transform then offset each from wherever it landed
+       rather than from the container origin. 52 of 53 pins ended up misplaced,
+       the worst by 1,248px, on touch devices only.
+
+       Nothing is needed anyway: the absolute position the marker already has is
+       itself the containing block for an absolutely positioned pseudo-element.
+       Measured with and without the declaration, the hit box is identical. */
+    .pin::after {
+      content: ""; position: absolute; inset: -12px; border-radius: 999px;
     }
-    #panel  { max-height: 64vh; }
-    /* Same footprint, higher z-index: the card covers the list sheet instead of
-       squeezing the map between two of them. */
-    #detail { max-height: 76vh; }
-    /* Nothing to nudge past down here -- the sheet owns the whole bottom edge,
-       so the controls move to the free top instead (see syncControlCorner). */
-    .leaflet-bottom.leaflet-right { margin-right: 0; }
+  }
+
+  /* ------------------------------------------------------------- grabber --- */
+  /* The drag handle for the bottom sheet. Not present on desktop, where the
+     cards are fixed furniture. A <button> rather than a <div> so the detents
+     are reachable by keyboard and by anyone who cannot perform a drag at all
+     -- Enter or a tap cycles peek -> half -> full. */
+  .grab { display: none; }
+
+  /* ================================================================ mobile ===
+     Three layouts, not two. The breakpoints below are mirrored exactly once in
+     JS (mqWide / mqShort) so the two cannot drift:
+
+       > 820px wide                 desktop   cards docked right and left
+       <= 820px, taller than 500    sheet     draggable bottom sheet
+       <= 820px, 500px or shorter   side      landscape phone: dock right
+
+     The third exists because a landscape phone is <= 820px wide and therefore
+     used to get the bottom sheet, which left a 115px strip of map -- and with
+     the detail card open, framePad() asked for 333px of padding out of 375px of
+     viewport, which is not a camera cameraForBounds can produce.
+
+     Everything here is additive and scoped. Nothing in this section can apply
+     at desktop width, and env() is 0 on any display without insets. */
+
+  @media (max-width: 820px) {
+    /* iOS zooms the page in whenever a focused input is under 16px and does not
+       zoom back out afterwards. This single value is the difference between a
+       working search field and a permanently magnified app. */
+    #q { font-size: 16px; }
+
+    /* 44px is the documented minimum touch target on both platforms; these five
+       controls were 34, 30, 38, 32 and 40. Deliberately confined to this query:
+       a mouse does not need the room, and growing them on desktop would move
+       the layout. */
+    .chip { min-height: 44px; padding: 0 16px; }
+    .near { min-height: 44px; padding: 0 14px; }
+    .iconbtn { width: 44px; height: 44px; }
+    /* 40 rather than 44 -- it sits inside the 48px-tall search field, so 44
+       would leave 2px of clearance and clip its own focus ring. The field's
+       full height is tappable either way. */
+    #clear { width: 40px; height: 40px; }
+    .srow { min-height: 48px; padding: 12px 14px; }
+    .item { padding: 13px 8px; }
+    /* Repeats the base rule's three-selector list because that list is what
+       out-specifies the vendor stylesheet; a shorter selector would lose. */
+    .maplibregl-ctrl-group button,
+    .maplibregl-ctrl-group button:hover,
+    .maplibregl-ctrl-group button:focus { width: 44px; height: 44px; }
+
+    /* A scroll that reaches the end of the list should stop there, not chain
+       out to the page -- which is a pull-to-refresh on Android and a
+       rubber-band of the whole app on iOS. */
+    #list, .dbody { overscroll-behavior: contain; }
+
+    /* A double-tap on a control should activate it, not select its label. */
+    .chip, .near, .item, .srow, .btn, .iconbtn, .grab, .region-head, .pin {
+      -webkit-user-select: none; user-select: none;
+    }
+
+    /* Nothing to nudge past down here -- a card owns the bottom or the right
+       edge, so the controls move to a free corner (see syncControlCorner). */
+    .maplibregl-ctrl-bottom-right { right: 0; }
+    .maplibregl-ctrl-top-right {
+      top: env(safe-area-inset-top); right: env(safe-area-inset-right);
+    }
+    .maplibregl-ctrl-top-left {
+      top: env(safe-area-inset-top); left: env(safe-area-inset-left);
+    }
+    .maplibregl-ctrl-bottom-left {
+      bottom: env(safe-area-inset-bottom); left: env(safe-area-inset-left);
+    }
+    /* Keep the attribution out of the navigation column on the opposite side.
+       !important because the vendor's expanded-compact padding is set at
+       (0,3,0) with content-box, so without both of these the cap is measured
+       against the content box and 36px of padding escapes it. */
+    .maplibregl-ctrl-attrib {
+      box-sizing: border-box !important;
+      max-width: calc(100vw - 80px) !important;
+    }
+
     .head { padding: 14px 14px 10px; }
     h1 { margin-bottom: 12px; }
     .dbody { padding: 12px 14px 18px; }
+  }
+
+  /* ------------------------------------------------------- sheet (portrait) */
+  @media (max-width: 820px) and (min-height: 501px) {
+    #panel, #detail {
+      top: auto;
+      left: calc(10px + env(safe-area-inset-left));
+      right: calc(10px + env(safe-area-inset-right));
+      /* --kb lifts the sheet clear of the on-screen keyboard. iOS does not
+         shrink the layout viewport when the keyboard opens, so without this the
+         sheet -- and the list you are typing to filter -- sits behind it. */
+      bottom: calc(10px + env(safe-area-inset-bottom) + var(--kb));
+      width: auto;
+      max-height: none;
+      border-radius: 20px;
+      /* Dragging moves the sheet with a transform rather than by animating
+         height: height reflows the scroll container every frame, a transform
+         stays on the compositor. The resting state is a real height again --
+         see settle() -- so .dfoot keeps its primary action pinned on screen. */
+      transform: translateY(var(--y, 0px));
+      transition: transform 280ms cubic-bezier(.32, .72, 0, 1);
+    }
+    /* --h is written by the detent code. The vh values are what you get before
+       it has measured, and if the script never runs at all. */
+    #panel  { height: var(--h, 64vh); }
+    #detail { height: var(--h, 76vh); }
+
+    /* Held down: no transition fighting the finger, and the blur dropped for
+       the duration. backdrop-filter re-composites a blur of the live map every
+       frame, which is the one thing here expensive enough to cost frames on a
+       phone; this is the same opaque fallback the @supports block already uses. */
+    #panel.is-dragging, #detail.is-dragging {
+      transition: none;
+      will-change: transform;
+      -webkit-backdrop-filter: none; backdrop-filter: none;
+      background: #141414f5;
+    }
+    /* Suppresses the transition for one committed frame, so settleTo() can swap
+       a transform for an equivalent height without the swap animating. Unlike
+       .is-dragging this keeps the blur, because it is on screen for one frame
+       either side of a visible change. */
+    #panel.no-anim, #detail.no-anim { transition: none; }
+
+    /* Only the scrolling middle may absorb a height change. Left to the default
+       flex-shrink, the header would squash as the sheet collapses -- the search
+       field visibly shortening as you drag -- and detents() measures PEEK from
+       where that header ends, so a shrinking header would make the peek height
+       depend on the peek height. */
+    .grab, .head, .dhead, .dfoot, .foot { flex: none; }
+
+    /* The drag surfaces. Without touch-action: none the browser claims the
+       gesture for panning and pointermove never arrives. Safe here because
+       nothing inside either header scrolls. */
+    .head, .dhead { touch-action: none; }
+
+    .grab {
+      display: block; flex: none; position: relative;
+      width: 100%; height: 28px; padding: 0;
+      border: 0; background: none;
+      /* The browser must not claim this gesture for scrolling or the drag
+         never reaches pointermove. */
+      touch-action: none;
+      -webkit-appearance: none; appearance: none;
+      cursor: grab;
+    }
+    .grab::before {
+      content: ""; display: block;
+      width: 38px; height: 4px; margin: 12px auto 0;
+      border-radius: 999px; background: #ffffff40;
+    }
+    /* Tapping the grabber cycles the detents, so it is a control and owes the
+       same 44px as every other one -- but at 44px tall it would put a band of
+       dead space between the handle and the header. So the drawn handle stays
+       28px and the HIT box is padded out to 44.
+       All 16px of the growth goes DOWNWARD, into the header's top padding.
+       Growing upward reads better -- the sheet's edge is where a thumb aims --
+       but the sheet is overflow: hidden for its rounded corners, so anything
+       above the top edge is clipped away and the target measured 36px. */
+    .grab::after {
+      content: ""; position: absolute; left: 0; right: 0; top: 0; bottom: -16px;
+    }
+    .grab:active { cursor: grabbing; }
+    .grab:focus-visible {
+      outline: 2px solid var(--accent-ring); outline-offset: -4px;
+      border-radius: 20px 20px 0 0;
+    }
+    /* The grabber supplies the top gutter both cards used to pad for. */
+    .head  { padding: 4px 14px 10px; }
+    .dhead { padding: 2px 12px 0; }
+  }
+
+  /* ------------------------------------------------ side (landscape phone) --
+     The desktop arrangement at phone scale: a full-height card on the right.
+     The detail card overlays it rather than taking the opposite edge -- two
+     340px cards on a 667px screen would leave 23px of map between them. */
+  @media (max-width: 820px) and (max-height: 500px) {
+    #panel, #detail {
+      top: calc(10px + env(safe-area-inset-top));
+      bottom: calc(10px + env(safe-area-inset-bottom));
+      left: auto;
+      right: calc(10px + env(safe-area-inset-right));
+      width: min(340px, 52vw);
+      height: auto;
+      max-height: none;
+      border-radius: 16px;
+    }
+    .head { padding: 12px 14px 8px; }
+    h1 { margin-bottom: 10px; }
+    /* MapLibre decides the compact attribution has room to expand by measuring
+       the whole map -- including the 340px of it underneath this card -- and
+       then runs 451px wide on a 740px screen, straight under the panel. Cap it
+       at the genuinely free width so it wraps instead of hiding behind the
+       card. Matches the card width expression above. */
+    /* !important on both, and not for tidiness. The vendor sets content-box on
+       .maplibregl-compact, and its expanded padding comes from
+       `.maplibregl-ctrl-top-left > .maplibregl-ctrl-attrib.maplibregl-compact-show`
+       at (0,3,0) -- which outranks anything reasonable here. Left as content-box
+       the 36px of padding lands OUTSIDE the cap, so a 366px max-width measured
+       402px on screen and stayed under the card. The file already uses
+       !important on this element's colours for the same reason. */
+    .maplibregl-ctrl-attrib {
+      box-sizing: border-box !important;
+      max-width: calc(100vw - min(340px, 52vw) - 34px) !important;
+    }
+    /* The chip row costs three of the ~355 available vertical pixels' worth of
+       rows; the region filter is the first thing to go when height is this
+       scarce. Search still reaches every region. */
+    .chips { display: none; }
+    .foot { display: none; }
+  }
+
+  /* Direction follows the interface locale, while canonical place names and
+     coordinates opt back into their own direction with bdi/dir=auto. */
+  [dir="rtl"] #panel { right: auto; left: 16px; }
+  [dir="rtl"] #detail { left: auto; right: 16px; }
+  [dir="rtl"] .search .mag { left: auto; right: 16px; }
+  [dir="rtl"] #q { padding-right: 44px; padding-left: 42px; }
+  [dir="rtl"] #clear { right: auto; left: 8px; }
+  [dir="rtl"] .language-select { padding-right: 10px; padding-left: 26px; }
+  [dir="rtl"] .maplibregl-ctrl-bottom-right { right: 0; }
+  [dir="rtl"] .maplibregl-ctrl-bottom-left { left: 388px; }
+
+  @media (max-width: 820px) {
+    [dir="rtl"] .maplibregl-ctrl-bottom-left {
+      left: env(safe-area-inset-left);
+    }
+  }
+  @media (max-width: 820px) and (min-height: 501px) {
+    [dir="rtl"] #panel, [dir="rtl"] #detail {
+      left: calc(10px + env(safe-area-inset-left));
+      right: calc(10px + env(safe-area-inset-right));
+    }
+  }
+  @media (max-width: 820px) and (max-height: 500px) {
+    [dir="rtl"] #panel, [dir="rtl"] #detail {
+      right: auto;
+      left: calc(10px + env(safe-area-inset-left));
+    }
   }
 </style>
 </head>
 <body>
 
-<div id="map"></div>
+<div id="map" aria-label="Interactive map of Iconic Chargers"></div>
+<div id="map-error" role="alert" hidden>
+  <strong id="map-error-title">Map unavailable</strong>
+  <span id="map-error-message">The charger list and details still work.</span>
+</div>
 
 <div id="panel">
+  <!-- display:none on desktop, so it costs the desktop layout nothing. A button
+       rather than a div because a drag handle that can ONLY be dragged is
+       unusable by keyboard and by anyone who cannot hold and move precisely;
+       Enter or a tap cycles the same detents the gesture reaches. -->
+  <button class="grab" id="panel-grab" type="button"
+          aria-controls="panel" aria-expanded="true" aria-label="Resize the list"></button>
   <div class="head">
-    <h1>Iconic Chargers <span id="total"></span></h1>
+    <div class="title-row">
+      <h1><span id="app-title">Iconic Chargers</span><span id="total"></span></h1>
+      <label>
+        <span id="language-label" class="sr-only">Language</span>
+        <select id="language" class="language-select" aria-labelledby="language-label"></select>
+      </label>
+    </div>
 
     <div class="search">
       <svg class="mag" width="16" height="16" viewBox="0 0 16 16" fill="none"
@@ -440,11 +829,13 @@
   <p class="foot">
     <svg width="7" height="10" viewBox="0 0 9 13" aria-hidden="true">
       <path d="M5.6 0 0 7.4h3.4L2.3 13 9 5.2H5.1z"/></svg>
-    is total stalls, not live availability.
+    <span id="footnote">is total stalls, not live availability.</span>
   </p>
 </div>
 
 <aside id="detail" hidden aria-label="Supercharger details">
+  <button class="grab" id="detail-grab" type="button"
+          aria-controls="detail" aria-expanded="true" aria-label="Resize the details"></button>
   <div class="dhead">
     <button id="dclose" class="iconbtn" type="button" aria-label="Close details">
       <svg width="15" height="15" viewBox="0 0 14 14" fill="none" stroke="currentColor"
@@ -469,7 +860,7 @@
 </aside>
 
 <script>
-// leaflet.js and sites.js are deferred from <head>, so they start downloading
+// MapLibre, sites.js and locales.js are deferred from <head>, so they start downloading
 // during parse instead of being discovered down here. Deferred scripts run
 // after parsing but before DOMContentLoaded, so waiting on that event is what
 // keeps this inline block -- and the single-file app -- ordered behind them.
@@ -479,16 +870,114 @@ document.addEventListener("DOMContentLoaded", function () {
   var DATA = window.ICONIC;
   var BADGES = DATA.badges;
   var REGIONS = DATA.regions;
+  var I18N = window.ICONIC_I18N;
+  var LOCALES = I18N.locales;
+  var LOCALE_KEY = "iconic.locale.v1";
+  var COUNTRY_KEY = "iconic.country.v1";
+  var COUNTRY_TTL = 6 * 60 * 60 * 1000;
 
-  // Reason used to be three saturated colours in the list. Tesla's UI is
-  // achromatic apart from one reserved accent, so it is text now -- which also
-  // means identity is never carried by colour alone.
-  var REASON_LABEL = {
-    flagship:     "Flagship Tesla site",
-    significance: "Special significance",
-    destination:  "Famous destination"
-  };
-  var REASON_SHORT = { flagship: "Flagship", significance: "Significance", destination: "Destination" };
+  function storageGet(kind, key) {
+    try {
+      var store = window[kind];
+      return store && store.getItem(key);
+    } catch (e) { return null; }
+  }
+  function storageSet(kind, key, value) {
+    try {
+      var store = window[kind];
+      if (!store) return false;
+      if (value == null) store.removeItem(key); else store.setItem(key, value);
+      return true;
+    } catch (e) { return false; }
+  }
+  var matchLocale = I18N.matchLocale;
+  var browserTags = Array.prototype.slice.call(
+    navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || "en"]);
+  var browserLocales = I18N.supportedFromTags(browserTags);
+  var browserLocale = browserLocales[0] || I18N.defaultLocale;
+  var savedLocale = storageGet("localStorage", LOCALE_KEY);
+  var localeOverride = Object.prototype.hasOwnProperty.call(LOCALES, savedLocale) ? savedLocale : null;
+  if (savedLocale && !localeOverride) storageSet("localStorage", LOCALE_KEY, null);
+
+  function localeForCountry(country) {
+    return I18N.localeForCountry(country, browserLocales, browserLocale);
+  }
+  function cachedCountry() {
+    var raw = storageGet("sessionStorage", COUNTRY_KEY);
+    if (!raw) return null;
+    try {
+      var entry = JSON.parse(raw);
+      if (/^[A-Z]{2}$/.test(entry.country) && entry.expires > Date.now()) return entry.country;
+    } catch (e) {}
+    storageSet("sessionStorage", COUNTRY_KEY, null);
+    return null;
+  }
+  // A saved language suppresses the network lookup, but a still-valid country
+  // cache may continue to drive units; language and units are independent.
+  var ipCountry = cachedCountry();
+  var localeKey = localeOverride || (ipCountry ? localeForCountry(ipCountry) : browserLocale);
+  var locale = LOCALES[localeKey] || LOCALES.en;
+  var MILES = ipCountry ? ipCountry === "US" : /^en-US\b/i.test(navigator.language || "");
+  var pluralRules;
+  var numberFormat;
+  var oneDecimalFormat;
+  var dateFormat;
+
+  function resetFormatters() {
+    pluralRules = new Intl.PluralRules(localeKey);
+    numberFormat = new Intl.NumberFormat(localeKey, { maximumFractionDigits: 0 });
+    oneDecimalFormat = new Intl.NumberFormat(localeKey, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    // Source dates are calendar dates, not instants. UTC prevents a negative
+    // local offset from displaying the previous day (Aug 12 became Aug 11 in
+    // Chicago when midnight UTC was formatted in the default time zone).
+    dateFormat = new Intl.DateTimeFormat(localeKey, {
+      year: "numeric", month: "short", day: "numeric", timeZone: "UTC"
+    });
+  }
+  resetFormatters();
+  function interpolate(template, values) {
+    return String(template).replace(/\{([a-zA-Z0-9_]+)\}/g, function (_, key) {
+      return values && values[key] != null ? values[key] : "{" + key + "}";
+    });
+  }
+  function ui(key, values) { return interpolate(locale.ui[key] || LOCALES.en.ui[key] || key, values); }
+  function noun(key, count) {
+    var forms = locale.nouns[key] || LOCALES.en.nouns[key];
+    var category = pluralRules.select(count);
+    return interpolate(forms[category] || forms.other, { count: numberFormat.format(count) });
+  }
+  function badgeCopy(badge) { return locale.badges[badge.badge] || LOCALES.en.badges[badge.badge]; }
+  function regionName(region) { return locale.regions[region] || LOCALES.en.regions[region] || region; }
+  function countryName(country) { return locale.countries[country] || LOCALES.en.countries[country] || country; }
+  function reasonName(reason, length) {
+    var value = locale.reasons[reason] || LOCALES.en.reasons[reason];
+    return value[length];
+  }
+  function formatDate(value) {
+    var parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+    if (!parts) return value || "—";
+    return dateFormat.format(new Date(Date.UTC(+parts[1], +parts[2] - 1, +parts[3])));
+  }
+  function formatPower(value) { return numberFormat.format(value) + "\u00a0kW"; }
+  function formatElevation(value) {
+    try {
+      return new Intl.NumberFormat(localeKey, {
+        style: "unit", unit: "meter", unitDisplay: "short", maximumFractionDigits: 0
+      }).format(value);
+    } catch (e) { return numberFormat.format(value) + "\u00a0m"; }
+  }
+  function maplibreLocale() {
+    return {
+      "Map.Title": ui("mapControlTitle"),
+      "NavigationControl.ZoomIn": ui("zoomIn"),
+      "NavigationControl.ZoomOut": ui("zoomOut"),
+      "NavigationControl.ResetBearing": ui("resetBearing"),
+      "AttributionControl.ToggleAttribution": ui("toggleAttribution")
+    };
+  }
+
+  document.documentElement.lang = localeKey;
+  document.documentElement.dir = locale.dir;
 
   var sitesOf = {};
   DATA.sites.forEach(function (s) {
@@ -498,6 +987,7 @@ document.addEventListener("DOMContentLoaded", function () {
   var active = new Set(REGIONS);
   var query = "";
   var selected = null;
+  var selectedSite = null;
   var here = null;        // {lat, lng} once Near me is granted -- never on load
   var distKm = {};        // badge -> km to its NEAREST site
   var order = null;       // badge names by distance, or null for region order
@@ -507,190 +997,521 @@ document.addEventListener("DOMContentLoaded", function () {
   // not yet assigned would be undefined at that point.
   var panelEl = document.getElementById("panel");
   var detailEl = document.getElementById("detail");
-  function narrow() { return window.innerWidth <= 820; }
 
-  var map = L.map("map", {
-    worldCopyJump: true, minZoom: 2, maxZoom: 17,
-    // Left at the default deliberately: whole-level snapping is what keeps
-    // fitBounds/setView/flyTo landing on a crisp raster level. The wheel
-    // gesture below gets its smoothness without touching this -- see there.
-    zoomSnap: 1,
-    // Read by the wheel handler below, not by Leaflet's, which is off. On a
-    // retina Mac Leaflet reads a 120px notch as a delta of 20 (wheelPxFactor
-    // = 3 x devicePixelRatio), so 25 here is ~0.55 levels a notch: enough
-    // that one notch of a discrete mouse wheel settles a whole level.
-    wheelPxPerZoomLevel: 25,
-    scrollWheelZoom: false
-  });
-  // On a wide screen the panel owns the right edge and CSS nudges the
-  // bottom-right corner past it. On a narrow one the sheet owns the whole
-  // bottom edge and there is nothing to nudge past, so both controls move to
-  // the free top -- without this the zoom buttons and, more importantly, the
-  // attribution sit underneath the sheet and cannot be seen at all.
-  var wide = window.matchMedia("(min-width: 821px)");
-  function syncControlCorner() {
-    var corner = wide.matches ? "bottomright" : "topright";
-    map.zoomControl.setPosition(corner);
-    map.attributionControl.setPosition(corner);
+  // The single source of truth for which of the three layouts is live. These
+  // are the exact query strings the stylesheet uses, because deriving the mode
+  // from innerWidth in parallel is precisely how CSS and JS drift apart -- and
+  // with three layouts rather than two, drift stops being hypothetical.
+  var mqWide  = window.matchMedia("(min-width: 821px)");
+  var mqShort = window.matchMedia("(max-width: 820px) and (max-height: 500px)");
+  function layout() {
+    return mqWide.matches ? "desktop" : mqShort.matches ? "side" : "sheet";
   }
-  wide.addEventListener("change", syncControlCorner);
-  syncControlCorner();
+  function narrow() { return !mqWide.matches; }
 
-  // No {s} sharding: a/b/c/d are one Fastly host behind a *.basemaps wildcard
-  // cert, so the browser coalesces them onto a single HTTP/2 connection
-  // regardless. The shards only ever cost three extra DNS lookups, and they
-  // split the preconnect four ways.
-  L.tileLayer("https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-    attribution:
-      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
-      '&copy; <a href="https://carto.com/attributions">CARTO</a> &middot; ' +
-      'site data <a href="https://supercharge.info">supercharge.info</a>',
-    maxZoom: 20,
-    // Selecting a badge flies the map across many zoom levels. Without this,
-    // every level crossed en route requests a full screen of tiles that is
-    // discarded before it can be seen -- competing with the tiles at the
-    // destination, which are the only ones anybody looks at.
-    // (keepBuffer was tried at 3, 4 and 6 and left at its default: it governs
-    // which loaded tiles are *retained*, not which are fetched ahead, so it
-    // changed neither the tiles needed for a view nor the cost of a drag.)
-    updateWhenZooming: false
-  }).addTo(map);
+  var mapErrorEl = document.getElementById("map-error");
+  var mapErrorMessageEl = document.getElementById("map-error-message");
+  var mapErrorKey = "mapFallback";
+  var map = null;
+  var mapLoaded = false;
 
-  // Both cards are opaque and sit ON the map, so anything framed without
-  // allowing for them lands underneath and looks like it failed to move.
-  // _getBoundsCenterZoom honours paddingTopLeft/paddingBottomRight next to
-  // maxZoom, so one helper covers every view call in this file.
-  function framePad() {
-    var p = panelEl.getBoundingClientRect();
-    if (narrow()) {
-      // The card overlays the sheet rather than sitting beside it, so only
-      // whichever one is actually on screen counts as an obstacle.
-      var sheet = detailEl.hidden ? p : detailEl.getBoundingClientRect();
-      return { paddingTopLeft: [24, 24], paddingBottomRight: [24, sheet.height + 24] };
-    }
+  function showMapError(key) {
+    mapErrorKey = key || "mapFallback";
+    mapErrorMessageEl.textContent = ui(mapErrorKey);
+    mapErrorEl.hidden = false;
+  }
+
+  function hideMapError() { mapErrorEl.hidden = true; }
+
+  // A public camera calculation turns the product requirement (metres above
+  // the map plane) into the zoom threshold for the current latitude and
+  // viewport. One zoom level halves camera height, so the smoothstep below is
+  // the 1,000m -> 500m transition requested for the Tesla-like view.
+  function automaticPitch(next) {
+    if (!map || !next || !next.center) return {};
+    var camera = map.calculateCameraOptionsFromCameraLngLatAltRotation(
+      next.center, (next.elevation || 0) + 1000, next.bearing || 0, 0);
+    var t = Math.max(0, Math.min(1, next.zoom - camera.zoom));
+    var smooth = t * t * (3 - 2 * t);
+    return { pitch: 50 * smooth };
+  }
+
+  // The zoom that would land a site in full 50-degree pitch: automaticPitch
+  // ramps across one level above its 1,000m cutoff. Product zoom is currently
+  // capped at 14, so camera framing clamps this target to a flat close-up while
+  // preserving the altitude-driven calculation for a future higher zoom cap.
+  //
+  // Deliberately a flat 1000 rather than the site's own elevation_m:
+  // automaticPitch reads next.elevation, which is *terrain* elevation and is 0
+  // with no DEM attached. Feeding this a different figure would aim past its
+  // cutoff rather than at it. Bearing is read live so a rotated map still hits
+  // the same threshold automaticPitch computes for itself.
+  function zoomFor3D(lngLat) {
+    return map.calculateCameraOptionsFromCameraLngLatAltRotation(
+      lngLat, 1000, map.getBearing(), 0).zoom + 1;
+  }
+
+  var overviewMinZoom = -2;
+  var overviewMaxZoom = 14;
+  var constrainedMaxZoom = overviewMaxZoom;
+  var MAX_CAMERA_LAT = 89.9;
+  function mercatorY(latitude) {
+    var lat = Math.max(-MAX_CAMERA_LAT, Math.min(MAX_CAMERA_LAT, latitude));
+    var sin = Math.sin(lat * Math.PI / 180);
+    return 0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI);
+  }
+  function latitudeForMercatorY(y) {
+    return Math.atan(Math.sinh(Math.PI * (1 - 2 * y))) * 180 / Math.PI;
+  }
+
+  // MapLibre normally raises zoom until a Mercator world is tall enough to
+  // fill the canvas. That makes a full-world camera impossible on a portrait
+  // screen even though the bottom sheet hides the empty lower area. Preserve
+  // its normal vertical constraint whenever the world fills the viewport; at
+  // wider zooms, keep the whole world on-canvas while allowing the overview
+  // camera to place it in the visible space above the sheet.
+  function constrainCamera(center, zoom) {
+    var z = Math.max(overviewMinZoom, Math.min(constrainedMaxZoom, +zoom));
+    var worldSize = 512 * Math.pow(2, z);
+    // #map is full-bleed, so innerHeight is its authoritative CSS height and
+    // avoids a layout read in this per-frame camera path.
+    var height = window.innerHeight;
+    var halfHeight = height / 2;
+    var y = mercatorY(center.lat) * worldSize;
+    var minY = worldSize >= height ? halfHeight : worldSize - halfHeight;
+    var maxY = worldSize >= height ? worldSize - halfHeight : halfHeight;
+    var constrainedY = Math.max(minY, Math.min(maxY, y));
     return {
-      paddingTopLeft: [detailEl.hidden ? 24 : detailEl.getBoundingClientRect().right + 24, 24],
-      // Distance from the panel's left edge to the right of the viewport, so
-      // the gutter is included without hard-coding the width twice.
-      paddingBottomRight: [window.innerWidth - p.left + 24, 24]
+      // Most interactions are nowhere near a pole, so avoid the inverse
+      // projection and allocation unless the center actually needs clamping.
+      center: constrainedY === y ? center : new maplibregl.LngLat(
+        center.lng, latitudeForMercatorY(constrainedY / worldSize)),
+      zoom: z
     };
   }
 
-  // Straight after the tile layer, before any marker or panel work: a map
-  // with no view requests no tiles, so this is the line that starts the
-  // network. Everything placed above it is latency added to the first paint.
-  map.fitBounds(
-    L.latLngBounds(DATA.sites.map(function (s) { return [s.latitude, s.longitude]; })),
-    framePad()
-  );
-
-  /* --------------------------------------------------------- wheel zoom ---
-     Leaflet's own wheel zoom is off (scrollWheelZoom: false) because it goes
-     through setView(), and setView() silently discards any zoom requested
-     while a previous one is still animating:
-
-       _tryAnimatedZoom(c, z, o) { if (!this._animatingZoom) { ...animate... }
-                                   return true }        // <- true regardless
-       setView: ... if (this._tryAnimatedZoom(...)) return this;   // dropped
-
-     The animation is a 250ms CSS transition, and _performZoom zeroes its
-     accumulated delta *before* the dropped call, so that motion is gone.
-     Measured on the old handler, six identical notches moved the map 1 level
-     at 30ms spacing, 2 at 60ms and 3 at 200ms -- the faster you scrolled, the
-     more input was thrown away. Whole-level snapping hid it: each surviving
-     notch jumped a full level, which is the "stepped" feel.
-
-     So drive the gesture the way Leaflet drives pinch-zoom (Map.TouchZoom):
-     a rAF loop calling map._move() directly. Three properties matter, all
-     from the vendored 1.9.4 source:
-
-       - _move() assigns `this._zoom = zoom` verbatim, with no _limitZoom.
-         The gesture can therefore be fractional while zoomSnap stays 1, so
-         every other view call in this file still lands on a whole level and
-         none of them needed changing.
-       - It never fires viewprereset. A non-animated setView() would, and
-         GridLayer binds viewprereset to _invalidateAll -- one notch would
-         drop every tile and rebuild the grid.
-       - Tagged {pinch: true} it takes the same path as a flight through
-         GridLayer._setView, so updateWhenZooming: false keeps holding and
-         the grid is transformed rather than refetched mid-gesture.
-
-     Private methods are used on purpose: Leaflet is vendored and pinned in
-     this repo, so they cannot drift underneath us. */
-  var WHEEL_EASE = 0.3;    // fraction of the remaining distance per frame
-  var WHEEL_IDLE = 180;    // ms of quiet that ends the gesture
-  var WHEEL_DEADZONE = 0.08;   // levels below which a gesture is a stray nudge
-  var wz = { on: false, from: 0, goal: 0, zoom: 0, anchor: null, at: null, frame: 0, timer: 0 };
-
-  // The centre that keeps `anchor` under the cursor at zoom z -- the same
-  // formulation TouchZoom uses for the pinch midpoint.
-  function wheelCenter(z) {
-    var off = wz.at.subtract(map.getSize().divideBy(2));
-    return map.unproject(map.project(wz.anchor, z).subtract(off), z);
+  if (!window.maplibregl) {
+    showMapError("mapSoftwareError");
+  } else {
+    try {
+      // Lazy mode downloads and initialises shaping only when RTL glyphs are
+      // encountered. A relative URL keeps the worker usable under file://.
+      if (maplibregl.setRTLTextPlugin && maplibregl.getRTLTextPluginStatus &&
+          maplibregl.getRTLTextPluginStatus() === "unavailable") {
+        maplibregl.setRTLTextPlugin(
+          new URL("vendor/mapbox-gl-rtl-text.js", location.href).href, true
+        ).catch(function () {});
+      }
+      map = new maplibregl.Map({
+        container: "map",
+        style: "https://tiles.openfreemap.org/styles/dark",
+        center: [0, 20],
+        zoom: 2,
+        // The temporary floor leaves room for a portrait viewport to fit the
+        // world. Once the list has established its final size, the exact
+        // all-sites camera becomes the real minimum in syncOverviewFloor().
+        minZoom: -2,
+        maxZoom: overviewMaxZoom,
+        renderWorldCopies: true,
+        attributionControl: false,
+        locale: maplibreLocale(),
+        dragRotate: true,
+        pitchWithRotate: false,
+        touchPitch: false,
+        touchZoomRotate: true,
+        canvasContextAttributes: { antialias: true },
+        transformCameraUpdate: automaticPitch,
+        transformConstrain: constrainCamera
+      });
+      // Keep the custom constraint synchronized with MapLibre's public
+      // ceiling without adding a method call to every drag/zoom frame.
+      var setMaxZoom = map.setMaxZoom;
+      map.setMaxZoom = function (zoom) {
+        constrainedMaxZoom = +zoom;
+        return setMaxZoom.call(this, zoom);
+      };
+    } catch (e) {
+      showMapError("webglError");
+      map = null;
+    }
   }
 
-  function wheelFrame() {
-    var z = wz.zoom + (wz.goal - wz.zoom) * WHEEL_EASE;
-    if (Math.abs(wz.goal - z) < 0.002) z = wz.goal;
-    if (z !== wz.zoom) {
-      wz.zoom = z;
-      map._move(wheelCenter(z), z, { pinch: true });
-    }
-    wz.frame = requestAnimationFrame(wheelFrame);
+  // Both cards are opaque and sit ON the map, so anything framed without
+  // allowing for them lands underneath and looks like it failed to move.
+  var GUTTER = 24;
+
+  // Measured from the card's leading EDGE to the far side of the viewport,
+  // never from its own width or height. A sheet part-way through a drag hangs
+  // below the viewport, so its height describes an obstacle bigger than the one
+  // actually covering the map -- and once the sheet can move, that is the
+  // normal case rather than an edge case.
+  function coveredBelow(el) { return window.innerHeight - el.getBoundingClientRect().top; }
+  function coveredRight(el) { return window.innerWidth - el.getBoundingClientRect().left; }
+  function coveredLeft(el) { return el.getBoundingClientRect().right; }
+  function rtl() { return locale.dir === "rtl"; }
+
+  // Sheet gestures and search expansion are transient UI, not new definitions
+  // of the atlas. Always derive the global floor from the list's resting half
+  // detent so filters, detail cards and drag state cannot move that limit.
+  function overviewCoveredBelow() {
+    if (layout() !== "sheet" || !panelSheet) return coveredBelow(panelEl);
+    var bottom = parseFloat(getComputedStyle(panelEl).bottom) || 0;
+    return detents(panelSheet).half + bottom;
   }
 
-  function wheelEnd() {
-    if (!wz.on) return;
-    wz.on = false;
-    cancelAnimationFrame(wz.frame);
-    // _limitZoom is where zoomSnap finally applies, so the map comes to rest
-    // on a whole level and the raster tiles are crisp again. Settle on the
-    // goal rather than the rendered zoom: if rAF was throttled mid-gesture,
-    // the map should still finish where the wheel actually asked it to go.
-    var z = map._limitZoom(wz.goal);
-    // Rounding to nearest can land back where the gesture started -- one
-    // notch is only ~0.55 levels and a gentle trackpad drag is less. Scrolling
-    // and having nothing happen at all is worse than moving a level, so past
-    // a dead zone the gesture always commits one level in the direction it
-    // was already going.
-    var moved = wz.goal - wz.from;
-    if (z === wz.from && Math.abs(moved) > WHEEL_DEADZONE) {
-      z = map._limitZoom(wz.from + (moved > 0 ? 1 : -1));
-    }
-    map._animateZoom(wheelCenter(z), z, true, map.options.zoomSnap);
+  // cameraForBounds cannot satisfy padding that leaves nothing to frame into.
+  // A full-height detail sheet on a landscape phone asked for 333px of vertical
+  // padding inside 375px of viewport, which is not a camera: the site would be
+  // placed by whatever MapLibre does when it runs out of room, not by us.
+  // Scale each axis back proportionally so at least 30% of the canvas survives.
+  //
+  // This is a floor, not a resize -- on desktop the widest ask is 436px of
+  // 1500px, so the factors are exactly 1 and the returned object is identical
+  // to the un-clamped one.
+  var MIN_FRAME = 0.3;
+  function clampPad(pad) {
+    var room = function (total, a, b) {
+      var limit = total * (1 - MIN_FRAME);
+      return a + b > limit ? limit / (a + b) : 1;
+    };
+    var kx = room(window.innerWidth, pad.left, pad.right);
+    var ky = room(window.innerHeight, pad.top, pad.bottom);
+    return { top: pad.top * ky, right: pad.right * kx,
+             bottom: pad.bottom * ky, left: pad.left * kx };
   }
 
-  // passive: false -- this listener calls preventDefault, without which
-  // ctrl+wheel is the browser's own page zoom.
-  map.getContainer().addEventListener("wheel", function (e) {
-    e.preventDefault();
-    // Leaflet's own delta normalisation and its own response curve, applied
-    // per event instead of per debounced burst. Nothing device-specific is
-    // reimplemented here; the curve saturates at four levels so a single
-    // freak event cannot throw the map across the world.
-    var d = L.DomEvent.getWheelDelta(e) / (4 * map.options.wheelPxPerZoomLevel);
-    var levels = 4 * Math.log(2 / (1 + Math.exp(-Math.abs(d)))) / Math.LN2;
-    if (d < 0) levels = -levels;
-    if (!levels) return;                       // horizontal-only scroll
-
-    wz.at = map.mouseEventToContainerPoint(e);
-    if (!wz.on) {
-      map._stop();                                         // cancel a flight
-      if (map._animatingZoom) map._onZoomTransitionEnd();  // finish a button zoom
-      wz.on = true;
-      wz.from = wz.zoom = wz.goal = map.getZoom();
-      map._moveStart(true, false);
-      wz.frame = requestAnimationFrame(wheelFrame);
+  function overviewPad() {
+    if (layout() === "sheet") {
+      return clampPad({ top: GUTTER, right: GUTTER,
+        bottom: overviewCoveredBelow() + GUTTER, left: GUTTER });
     }
-    // Re-read each event so the zoom follows a cursor that moves mid-gesture.
-    wz.anchor = map.containerPointToLatLng(wz.at);
-    // Clamped rather than accumulated: otherwise ten notches past maxZoom
-    // would have to be scrolled back before the map moved at all.
-    wz.goal = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), wz.goal + levels));
+    return clampPad(rtl()
+      ? { top: GUTTER, right: GUTTER, bottom: GUTTER,
+          left: coveredLeft(panelEl) + GUTTER }
+      : { top: GUTTER, right: coveredRight(panelEl) + GUTTER,
+          bottom: GUTTER, left: GUTTER });
+  }
 
-    clearTimeout(wz.timer);
-    wz.timer = setTimeout(wheelEnd, WHEEL_IDLE);
-  }, { passive: false });
+  function framePad() {
+    if (detailEl.hidden) return overviewPad();
+    switch (layout()) {
+      case "sheet":
+        return clampPad({ top: GUTTER, right: GUTTER,
+                          bottom: coveredBelow(detailEl) + GUTTER, left: GUTTER });
+      // The detail card overlays the list on the right edge here rather than
+      // taking the opposite one, so there is a single obstacle, not two.
+      case "side":
+        return clampPad(rtl()
+          ? { top: GUTTER, right: GUTTER, bottom: GUTTER,
+              left: coveredLeft(detailEl) + GUTTER }
+          : { top: GUTTER, right: coveredRight(detailEl) + GUTTER,
+              bottom: GUTTER, left: GUTTER });
+      default:
+        return clampPad(rtl()
+          ? { top: GUTTER,
+              right: window.innerWidth - detailEl.getBoundingClientRect().left + GUTTER,
+              bottom: GUTTER, left: coveredLeft(panelEl) + GUTTER }
+          : { top: GUTTER, right: coveredRight(panelEl) + GUTTER,
+              bottom: GUTTER,
+              left: detailEl.getBoundingClientRect().right + GUTTER });
+    }
+  }
+
+  function boundsForSites(sites) {
+    var bounds = new maplibregl.LngLatBounds();
+    sites.forEach(function (s) { bounds.extend([s.longitude, s.latitude]); });
+    return bounds;
+  }
+
+  // The floor is the responsive camera for the complete, unfiltered atlas in
+  // its resting shell. Detail cards and filters must not make it drift. The
+  // -2 clamp is MapLibre's supported lower bound and only matters for
+  // pathologically narrow viewports; normal phone widths remain above it.
+  function syncOverviewFloor(reframe) {
+    if (!map) return null;
+    var padding = overviewPad();
+    // cameraForBounds is exact to a fraction of a CSS pixel. Give boundary
+    // sites two real pixels of breathing room so projection rounding cannot
+    // leave an extremal site just outside the unobscured overview.
+    Object.keys(padding).forEach(function (edge) { padding[edge] += 2; });
+    var camera = map.cameraForBounds(boundsForSites(DATA.sites), {
+      padding: padding, maxZoom: map.getMaxZoom()
+    });
+    if (!camera) return null;
+    overviewMinZoom = camera.zoom = Math.max(-2, camera.zoom);
+    map.setMinZoom(camera.zoom);
+    if (reframe) {
+      map.stop();
+      map.jumpTo(camera);
+    }
+    return camera;
+  }
+
+  /* -------------------------------------------------------- basemap tint ---
+     OpenFreeMap's `dark` style is not merely dim, it is inverted in three
+     places, which is why the stock map reads as an empty black field:
+
+       building            rgb(10,10,10) on a rgb(12,12,12) background -- the
+                           buildings are DARKER than the land they sit on, and
+                           only their outline shows at all
+       motorway inner      #000 from z6 up, painted OVER a lighter #3c3c3c
+                           casing, so the most important road class renders as
+                           two thin edges around a black gap
+       major road inner    #121212, darker than highway_minor's #181818 --
+                           the hierarchy runs backwards
+
+     Plus black text on water_name and ~2.4:1 street names.
+
+     So: one achromatic ramp where lightness tracks importance. Ratios below
+     are relative luminance against LAND, computed rather than eyeballed.
+     `dark` is OpenFreeMap's only dark style, so overriding its paint is the
+     alternative to adding a second tile provider -- not just the tidier one. */
+  var LAND = "#1a1a1a";
+  var BASEMAP_PAINT = [
+    ["background",              "background-color",   LAND],
+    // Darker than land: the conventional dark-map cue, and what makes a
+    // coastline legible at low zoom.
+    ["water",                   "fill-color",         "#0a0a0a"],
+    ["waterway",                "line-color",         "#0a0a0a"],
+    // Ice tracked the old near-black background, so lifting the land without
+    // these leaves Greenland and Antarctica as dark holes at the world view.
+    // A step above land also matches what ice actually looks like.
+    ["landcover_ice_shelf",     "fill-color",         "#232323"],
+    ["landcover_glacier",       "fill-color",         "#232323"],
+    ["landuse_residential",     "fill-color",         "#1e1e1e"],
+    ["landcover_wood",          "fill-color",         "#1f1f1f"],
+    ["landuse_park",            "fill-color",         "#1f1f1f"],
+
+    ["building",                "fill-color",         "#2e2e2e"],   // 1.28:1
+    ["building",                "fill-outline-color", "#3a3a3a"],
+
+    // Casings go DARKER than the land. Upstream they are lighter than the
+    // inner they wrap, which is exactly what produces the hollow-black-road
+    // look; a dark casing makes each road read as a ribbon with a crisp edge.
+    ["highway_major_casing",    "line-color",         "#0f0f0f"],
+    ["highway_motorway_casing", "line-color",         "#0f0f0f"],
+    ["aeroway-runway-casing",   "line-color",         "#0f0f0f"],
+
+    ["highway_path",            "line-color",         "#2b2b2b"],
+    ["highway_minor",           "line-color",         "#454545"],   // 1.81:1
+    ["highway_major_subtle",    "line-color",         "#454545"],
+    ["highway_major_inner",     "line-color",         "#585858"],   // 2.45:1
+    ["highway_motorway_subtle", "line-color",         "#585858"],
+    // Flat, replacing the zoom interpolate that ramps to #000 at z6. Safe:
+    // this layer is minzoom 6, and highway_motorway_subtle covers below it.
+    ["highway_motorway_inner",  "line-color",         "#6c6c6c"],   // 3.31:1
+
+    ["railway",                 "line-color",         "#3d3d3d"],
+    ["railway_minor",           "line-color",         "#3d3d3d"],
+    ["railway_transit",         "line-color",         "#3d3d3d"],
+    ["railway_dashline",        "line-color",         LAND],
+    ["railway_minor_dashline",  "line-color",         LAND],
+    ["railway_transit_dashline","line-color",         LAND],
+
+    ["aeroway-area",            "fill-color",         "#2b2b2b"],   // was #000
+    ["aeroway-runway",          "line-color",         "#2b2b2b"],   // was #000
+    ["aeroway-taxiway",         "line-color",         "#242424"],
+    ["road_area_pier",          "fill-color",         "#242424"],
+    ["road_pier",               "line-color",         "#242424"],
+
+    ["boundary_state",          "line-color",         "#4a4a4a"],
+    ["boundary_country_z0-4",   "line-color",         "#565656"],
+    ["boundary_country_z5-",    "line-color",         "#565656"],
+
+    ["highway_name_other",      "text-color",         "#a8a8a8"],   // 7.3:1
+    ["highway_name_other",      "text-halo-color",    "#000000cc"],
+    ["highway_name_motorway",   "text-color",         "#c2c2c2"],
+    // Was black text on dark water, legible only through its halo.
+    ["water_name",              "text-color",         "#8d8d8d"],
+    ["water_name",              "text-halo-color",    "#0a0a0acc"]
+  ];
+  // Every place_* label shares one treatment; listing them by hand would just
+  // be the same two rows nine times.
+  ["place_other", "place_suburb", "place_village", "place_town", "place_city",
+   "place_city_large", "place_state", "place_country_other", "place_country_minor",
+   "place_country_major"].forEach(function (id) {
+    BASEMAP_PAINT.push([id, "text-color", "#c2c2c2"]);       // 9.8:1
+    BASEMAP_PAINT.push([id, "text-halo-color", "#000000cc"]);
+  });
+
+  function tintBasemap() {
+    if (!map) return;
+    BASEMAP_PAINT.forEach(function (rule) {
+      // Guarded: an upstream style revision that renames or drops a layer
+      // should fall back to the stock colour, not throw during load.
+      if (map.getLayer(rule[0])) map.setPaintProperty(rule[0], rule[1], rule[2]);
+    });
+  }
+
+  function localizeMapLabels() {
+    if (!map || !map.getStyle()) return;
+    var fields = locale.mapNames.concat(["name", "name:en", "name_en"]);
+    var expression = ["coalesce"].concat(fields.map(function (field) {
+      return ["get", field];
+    }));
+    (map.getStyle().layers || []).forEach(function (layer) {
+      if (layer.type !== "symbol" || !layer.layout || !layer.layout["text-field"]) return;
+      // Motorway shields are route references, not place names. Other symbol
+      // fields are changed only when the source style already asks for a name.
+      if (layer.id === "highway_name_motorway" ||
+          JSON.stringify(layer.layout["text-field"]).indexOf("name") < 0) return;
+      try { map.setLayoutProperty(layer.id, "text-field", expression); } catch (e) {}
+    });
+  }
+
+  function addBuildings3D() {
+    if (!map) return;
+    // Reassert this on every style load, even when MapLibre preserves the
+    // custom layer during a diffed restyle.
+    map.setLight({
+      anchor: "viewport",
+      position: [1.15, 210, 30],
+      "position-transition": { duration: 0 },
+      color: "#ffffff",
+      "color-transition": { duration: 0 },
+      intensity: 0.08,
+      "intensity-transition": { duration: 0 }
+    });
+    if (map.getLayer("iconic-3d-buildings")) return;
+    var style = map.getStyle();
+    var layers = style.layers || [];
+    var sourceId = Object.keys(style.sources || {}).find(function (id) {
+      var source = style.sources[id] || {};
+      return source.type === "vector" && /tiles\.openfreemap\.org\/planet/.test(source.url || "");
+    });
+    if (!sourceId) return;
+
+    // OpenFreeMap places water_name before its flat building fill, so the
+    // first text layer is not a safe extrusion anchor. Start after the last
+    // layer that paints this source's buildings, then stop at the next text
+    // label. This keeps the dark footprint below the opaque 3D material while
+    // road and place names remain readable above it.
+    var lastBuilding = -1;
+    layers.forEach(function (layer, index) {
+      if (layer.source === sourceId && layer["source-layer"] === "building") {
+        lastBuilding = index;
+      }
+    });
+    var label = layers.slice(lastBuilding + 1).find(function (layer) {
+      return layer.type === "symbol" && layer.layout && layer.layout["text-field"];
+    });
+    // The white viewport light keeps the material achromatic while its very
+    // low intensity separates adjacent roof and wall planes. Viewport anchoring
+    // makes that edge cue stable as the map rotates.
+    map.addLayer({
+      id: "iconic-3d-buildings",
+      type: "fill-extrusion",
+      source: sourceId,
+      "source-layer": "building",
+      minzoom: 15,
+      filter: ["all",
+        ["==", ["geometry-type"], "Polygon"],
+        ["!=", ["get", "hide_3d"], true]
+      ],
+      paint: {
+        // Every roof and wall starts from the same muted gray; only the subtle
+        // directional light varies it by face. There is no hue, transparency
+        // blending or height-based vertical gradient involved.
+        "fill-extrusion-color": "#787876",
+        // Grow from the flat footprint to the supplied OSM height over one
+        // zoom level. Scaling base and height together keeps elevated parts
+        // valid throughout the reveal instead of making them jump at z16.
+        "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"],
+          15, 0,
+          16, ["coalesce", ["to-number", ["get", "render_height"]], 0]
+        ],
+        "fill-extrusion-base": ["interpolate", ["linear"], ["zoom"],
+          15, 0,
+          16, ["coalesce", ["to-number", ["get", "render_min_height"]], 0]
+        ],
+        "fill-extrusion-opacity": 1,
+        "fill-extrusion-vertical-gradient": false
+      }
+    }, label && label.id);
+    map.getContainer().dataset.buildings3d = "ready";
+  }
+
+  var navigation = null;
+  var attribution = null;
+  var controlCorner = "";
+  // A corner each per layout. The two are separated on a phone because stacking
+  // them puts the attribution BELOW a 148px-tall navigation group, which on a
+  // 932px screen lands it in the middle of the map rather than against an edge.
+  // MapLibre ships compact attribution expanded and minimises it on the first
+  // interaction, so its opening size is not something to design around -- but
+  // where it opens is.
+  //
+  // Landscape keeps both off the right edge, which the card has taken; putting
+  // either under the card would repeat the original bug, where the sheet hid
+  // the zoom buttons and the attribution alike, and the attribution is a
+  // licence requirement rather than a nicety.
+  var CONTROL_CORNER = {
+    desktop: { nav: "bottom-right", attrib: "bottom-right" },
+    sheet:   { nav: "top-right",    attrib: "top-left" },
+    side:    { nav: "top-left",     attrib: "bottom-left" }
+  };
+  var CONTROL_CORNER_RTL = {
+    desktop: { nav: "bottom-left", attrib: "bottom-left" },
+    sheet:   { nav: "top-left",    attrib: "top-right" },
+    side:    { nav: "top-right",   attrib: "bottom-right" }
+  };
+  function syncControlCorner() {
+    if (!map) return;
+    var want = (rtl() ? CONTROL_CORNER_RTL : CONTROL_CORNER)[layout()];
+    var key = want.nav + "|" + want.attrib;
+    if (key === controlCorner) return;
+    if (controlCorner) {
+      map.removeControl(navigation);
+      map.removeControl(attribution);
+    }
+    map.addControl(navigation, want.nav);
+    map.addControl(attribution, want.attrib);
+    controlCorner = key;
+  }
+  mqWide.addEventListener("change", syncControlCorner);
+  mqShort.addEventListener("change", syncControlCorner);
+
+  if (map) {
+    navigation = new maplibregl.NavigationControl({
+      showZoom: true, showCompass: true, visualizePitch: true
+    });
+    attribution = new maplibregl.AttributionControl({
+      compact: true,
+      customAttribution: '<span class="iconic-attribution">' + esc(ui("siteData")) +
+        ' <a href="https://supercharge.info">supercharge.info</a></span>'
+    });
+    syncControlCorner();
+
+    // Keep the existing discrete-wheel target while retaining MapLibre's
+    // native trackpad detection, cursor anchoring and fractional vector zoom.
+    map.scrollZoom.setWheelZoomRate(1 / 141);
+    map.scrollZoom.setZoomRate(1 / 100);
+
+    // style.load rather than load: it fires on every style load, so the tint
+    // survives a restyle instead of only applying to the first one.
+    map.on("style.load", function () {
+      tintBasemap();
+      addBuildings3D();
+      localizeMapLabels();
+    });
+    map.on("load", function () {
+      mapLoaded = true;
+      hideMapError();
+      tintBasemap();
+      addBuildings3D();
+      localizeMapLabels();
+    });
+    map.on("error", function (e) {
+      var message = e && e.error && e.error.message || "";
+      if (!mapLoaded && /style|source|sprite|glyph|fetch|network|webgl/i.test(message)) {
+        showMapError("vectorMapError");
+      }
+    });
+    map.getCanvas().addEventListener("webglcontextlost", function () {
+      showMapError("contextLost");
+    });
+
+  }
 
 
   /* ------------------------------------------------------------ helpers --- */
@@ -700,10 +1521,13 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
   function place(s) {
-    return [s.city, s.state, s.country].filter(Boolean).join(", ");
+    return [s.city, s.state, countryName(s.country)].filter(Boolean).join(", ");
   }
   function shortPlace(s) {
-    return [s.city, s.state || s.country].filter(Boolean).join(", ");
+    return [s.city, s.state || countryName(s.country)].filter(Boolean).join(", ");
+  }
+  function canonicalPlace(s) {
+    return [s.city, s.state, s.country].filter(Boolean).join(", ");
   }
   function text(el, s) {
     if (el.textContent !== s) el.textContent = s;
@@ -716,9 +1540,6 @@ document.addEventListener("DOMContentLoaded", function () {
     '<svg width="7" height="10" viewBox="0 0 9 13" aria-hidden="true">' +
       '<path d="M5.6 0 0 7.4h3.4L2.3 13 9 5.2H5.1z"/></svg>';
 
-  // Miles where the locale expects them, kilometres otherwise. Tesla follows
-  // the car's unit setting; a browser only offers the language tag.
-  var MILES = /^en-US\b/i.test(navigator.language || "");
   function haversine(aLat, aLng, bLat, bLng) {
     var R = 6371, r = Math.PI / 180;
     var dLat = (bLat - aLat) * r, dLng = (bLng - aLng) * r;
@@ -729,41 +1550,82 @@ document.addEventListener("DOMContentLoaded", function () {
   function fmtDist(km) {
     if (km == null) return "";
     var v = MILES ? km * 0.621371 : km;
-    return (v >= 10 ? Math.round(v).toLocaleString() : v.toFixed(1)) + (MILES ? " mi" : " km");
+    try {
+      return new Intl.NumberFormat(localeKey, {
+        style: "unit", unit: MILES ? "mile" : "kilometer", unitDisplay: "short",
+        minimumFractionDigits: v >= 10 ? 0 : 1,
+        maximumFractionDigits: v >= 10 ? 0 : 1
+      }).format(v);
+    } catch (e) {
+      return (v >= 10 ? numberFormat.format(Math.round(v)) : oneDecimalFormat.format(v)) +
+        (MILES ? " mi" : " km");
+    }
+  }
+  function foldSearch(value) {
+    var folded;
+    try { folded = String(value || "").toLocaleLowerCase(localeKey); }
+    catch (e) { folded = String(value || "").toLowerCase(); }
+    return folded.normalize("NFD").replace(/\p{M}/gu, "").replace(/ı/g, "i");
   }
 
   /* ------------------------------------------------------------ markers --- */
-  var layer = L.layerGroup().addTo(map);
   var marks = {};   // badge name -> [{marker, site, badge}]
 
-  function pinIcon(stalls, label) {
-    // role="img" + <title> rather than the marker's alt option: Leaflet only
-    // applies alt to image icons, so a divIcon would otherwise be unnamed.
-    var html =
-      '<span class="cap" role="img" aria-label="' + esc(label) + '">' +
-        BOLT + "<b>" + (stalls || "?") + "</b>" +
-      "</span>";
-    // iconSize null keeps Leaflet from stamping width/height/margins, so the
-    // capsule can size itself; .cap centres on the coordinate in CSS.
-    return L.divIcon({
-      className: "pin", html: html, iconSize: null, tooltipAnchor: [0, -14]
-    });
+  function markerLabel(badge, site) {
+    return badge.site_count > 1 ? badge.badge + " — " + site.name : badge.badge;
+  }
+  function stallsLabel(stalls) {
+    if (stalls) return noun("stall", stalls);
+    var forms = locale.nouns.stall || LOCALES.en.nouns.stall;
+    return interpolate(forms.other, { count: ui("unknown") });
+  }
+  function relabelPin(el, badge, site) {
+    var label = markerLabel(badge, site);
+    el.setAttribute("aria-label", ui("markerAria", {
+      label: label, stalls: stallsLabel(site.stalls)
+    }));
+    var count = el.querySelector(".cap b");
+    if (count) text(count, site.stalls ? numberFormat.format(site.stalls) : "?");
+    var tip = el.querySelector(".tip");
+    if (tip) { text(tip, label); tip.setAttribute("dir", "auto"); }
+  }
+  function pinElement(badge, site) {
+    var el = document.createElement("button");
+    el.className = "pin";
+    el.type = "button";
+    el.innerHTML = '<span class="cap">' + BOLT + "<b></b></span>";
+    var tip = document.createElement("span");
+    tip.className = "tip";
+    tip.setAttribute("aria-hidden", "true");
+    el.appendChild(tip);
+    relabelPin(el, badge, site);
+    return el;
   }
 
   BADGES.forEach(function (badge) {
     marks[badge.badge] = sitesOf[badge.badge].map(function (s) {
-      var label = badge.site_count > 1 ? badge.badge + " — " + s.name : badge.badge;
-      var marker = L.marker([s.latitude, s.longitude], {
-        icon: pinIcon(s.stalls, label + ", " + (s.stalls || "?") + " stalls"),
-        riseOnHover: true,
-        keyboard: true
-      });
-      marker.bindTooltip(esc(label), { className: "tip", direction: "top" });
+      var element = pinElement(badge, s);
+      var marker = map ? new maplibregl.Marker({
+        element: element,
+        anchor: "center",
+        pitchAlignment: "viewport",
+        rotationAlignment: "viewport"
+      }).setLngLat([s.longitude, s.latitude]) : null;
       // No popup any more -- a pin opens the same detail card the list does.
-      marker.on("click", function () { select(badge.badge, true, s); });
-      return { marker: marker, site: s, badge: badge };
+      element.addEventListener("click", function (e) {
+        e.stopPropagation();
+        select(badge.badge, true, s);
+      });
+      return { marker: marker, element: element, site: s, badge: badge };
     });
   });
+  function relabelMarkers() {
+    Object.keys(marks).forEach(function (name) {
+      marks[name].forEach(function (entry) {
+        relabelPin(entry.element, entry.badge, entry.site);
+      });
+    });
+  }
 
   /* ------------------------------------------------------------ filters --- */
   var filtersEl = document.getElementById("filters");
@@ -784,6 +1646,12 @@ document.addEventListener("DOMContentLoaded", function () {
       }
     });
   }
+  function relabelChips() {
+    text(allChip, ui("all"));
+    REGIONS.forEach(function (region) {
+      if (regionChip[region]) text(regionChip[region], regionName(region));
+    });
+  }
 
   function showAll() {
     active = new Set(REGIONS);
@@ -795,7 +1663,7 @@ document.addEventListener("DOMContentLoaded", function () {
   var allChip = document.createElement("button");
   allChip.className = "chip";
   allChip.type = "button";
-  allChip.textContent = "All";
+  allChip.textContent = ui("all");
   allChip.addEventListener("click", showAll);
   filtersEl.appendChild(allChip);
 
@@ -806,7 +1674,7 @@ document.addEventListener("DOMContentLoaded", function () {
     b.className = "chip";
     b.type = "button";
     b.dataset.region = region;
-    b.textContent = region;
+    b.textContent = regionName(region);
     b.addEventListener("click", function () {
       // Additive, which is what an explicit All chip implies: the first tap
       // narrows to that region, further taps add regions, and un-ticking the
@@ -831,22 +1699,27 @@ document.addEventListener("DOMContentLoaded", function () {
   /* --------------------------------------------------------------- list --- */
   var listEl = document.getElementById("list");
   var countEl = document.getElementById("count");
-  document.getElementById("total").textContent =
-    DATA.badge_count + " badges · " + DATA.site_count + " Superchargers · " + DATA.snapshot_date;
-
-  // Search index, built once. Concatenating every badge's sites into a
-  // haystack on each keystroke was most of the per-key cost, and the strings
-  // never change.
   var HAY = {};
-  BADGES.forEach(function (b) {
-    HAY[b.badge] = (
-      b.badge + " " + b.why + " " + b.region + " " + REASON_SHORT[b.reason] + " " +
-      sitesOf[b.badge].map(function (s) { return s.name + " " + place(s); }).join(" ")
-    ).toLowerCase();
-  });
+  function rebuildSearchIndex() {
+    BADGES.forEach(function (b) {
+      var translated = badgeCopy(b);
+      HAY[b.badge] = foldSearch([
+        b.badge, b.why, b.note || "", b.region,
+        LOCALES.en.regions[b.region] || b.region,
+        LOCALES.en.reasons[b.reason].long, LOCALES.en.reasons[b.reason].short,
+        translated.why, translated.note || "", regionName(b.region),
+        reasonName(b.reason, "long"), reasonName(b.reason, "short"),
+        sitesOf[b.badge].map(function (s) {
+          var englishCountry = LOCALES.en.countries[s.country] || s.country;
+          return [s.name, canonicalPlace(s), englishCountry, place(s)].join(" ");
+        }).join(" ")
+      ].join(" "));
+    });
+  }
+  rebuildSearchIndex();
 
   function visible() {
-    var q = query.trim().toLowerCase();
+    var q = foldSearch(query.trim());
     return BADGES.filter(function (b) {
       if (!active.has(b.region)) return false;
       return !q || HAY[b.badge].indexOf(q) !== -1;
@@ -859,9 +1732,12 @@ document.addEventListener("DOMContentLoaded", function () {
   var rowEl = {};      // badge name -> button
   var headEl = {};     // region -> sticky header
   var distEl = {};     // badge name -> the distance line in its row
+  var subEl = {};      // badge name -> persistent secondary label
+  var approxEl = {};   // badge name -> approximation pill
+  var stallsEl = {};   // badge name -> persistent stall count
   var emptyEl = document.createElement("p");
   emptyEl.className = "empty";
-  emptyEl.textContent = "No badges match that search.";
+  emptyEl.textContent = ui("noMatches");
   emptyEl.hidden = true;
 
   REGIONS.forEach(function (region) {
@@ -874,9 +1750,6 @@ document.addEventListener("DOMContentLoaded", function () {
 
     inRegion.forEach(function (b) {
       var group = sitesOf[b.badge];
-      var sub = (b.site_count > 1
-        ? b.site_count + " Superchargers"
-        : shortPlace(group[0])) + " · " + REASON_SHORT[b.reason];
       var stalls = b.site_count > 1
         ? group.reduce(function (a, s) { return a + (s.stalls || 0); }, 0)
         : (group[0].stalls || "—");
@@ -888,19 +1761,22 @@ document.addEventListener("DOMContentLoaded", function () {
       el.innerHTML =
         '<span class="ico">' + BOLT + "</span>" +
         '<span class="txt">' +
-          '<span class="nm">' + esc(b.badge) +
-            (b.confidence === "approx" ? '<span class="approx">approx</span>' : "") +
+          '<span class="nm"><bdi dir="auto">' + esc(b.badge) + "</bdi>" +
+            (b.confidence === "approx" ? '<span class="approx"></span>' : "") +
           "</span>" +
-          '<span class="sub">' + esc(sub) + "</span>" +
+          '<span class="sub"></span>' +
         "</span>" +
         '<span class="meta">' +
           '<span class="dist" hidden></span>' +
-          '<span class="stalls">' + BOLT_SM + "<span>" + stalls + "</span></span>" +
+          '<span class="stalls">' + BOLT_SM + "<span>" + esc(stalls) + "</span></span>" +
         "</span>";
       el.addEventListener("click", function () { select(b.badge, true); });
       listEl.appendChild(el);
       rowEl[b.badge] = el;
       distEl[b.badge] = el.querySelector(".dist");
+      subEl[b.badge] = el.querySelector(".sub");
+      approxEl[b.badge] = el.querySelector(".approx");
+      stallsEl[b.badge] = el.querySelector(".stalls span");
     });
   });
   listEl.appendChild(emptyEl);
@@ -908,6 +1784,31 @@ document.addEventListener("DOMContentLoaded", function () {
   // Region order is simply the order the nodes were built in, so keep a
   // snapshot to restore when Near me is switched back off.
   var naturalOrder = Array.prototype.slice.call(listEl.children);
+
+  function relabelRows() {
+    text(emptyEl, ui("noMatches"));
+    BADGES.forEach(function (b) {
+      var group = sitesOf[b.badge];
+      var secondary = subEl[b.badge];
+      if (b.site_count > 1) {
+        text(secondary, noun("supercharger", b.site_count) + " · " +
+          reasonName(b.reason, "short"));
+      } else {
+        secondary.textContent = "";
+        var properPlace = document.createElement("bdi");
+        properPlace.dir = "auto";
+        properPlace.textContent = shortPlace(group[0]);
+        secondary.appendChild(properPlace);
+        secondary.appendChild(document.createTextNode(" · " + reasonName(b.reason, "short")));
+      }
+      if (approxEl[b.badge]) text(approxEl[b.badge], ui("approx"));
+      var stalls = b.site_count > 1
+        ? group.reduce(function (sum, site) { return sum + (site.stalls || 0); }, 0)
+        : group[0].stalls;
+      text(stallsEl[b.badge], stalls ? numberFormat.format(stalls) : "—");
+    });
+  }
+  relabelRows();
 
   // Rows are built once, so distance sorting reorders by appendChild -- which
   // MOVES the existing nodes rather than recreating them, keeping the whole
@@ -922,7 +1823,7 @@ document.addEventListener("DOMContentLoaded", function () {
   /* --------------------------------------------------------- the render --- */
   var shown = new Set();     // badge names currently on the map
 
-  function render() {
+  function render(preserveSelection) {
     var rows = visible();
     var want = new Set(rows.map(function (b) { return b.badge; }));
 
@@ -933,7 +1834,8 @@ document.addEventListener("DOMContentLoaded", function () {
       var on = want.has(name);
       if (on === shown.has(name)) return;
       marks[name].forEach(function (m) {
-        if (on) { layer.addLayer(m.marker); } else { layer.removeLayer(m.marker); }
+        if (!m.marker) return;
+        if (on) { m.marker.addTo(map); } else { m.marker.remove(); }
       });
       if (on) { shown.add(name); } else { shown.delete(name); }
     });
@@ -943,7 +1845,7 @@ document.addEventListener("DOMContentLoaded", function () {
     // so a dropped selection would otherwise leave a row announcing itself as
     // current with no marker selected anywhere -- and, since the detail card
     // replaced the popup, a card open for a badge that is no longer listed.
-    if (selected && !want.has(selected)) {
+    if (selected && !want.has(selected) && !preserveSelection) {
       rowEl[selected].removeAttribute("aria-current");
       highlight(null);
       selected = null;
@@ -954,9 +1856,13 @@ document.addEventListener("DOMContentLoaded", function () {
     // differs, so every unguarded write is a DOM mutation for nothing.
     var siteTotal = rows.reduce(function (a, b) { return a + b.site_count; }, 0);
     text(countEl, rows.length === BADGES.length
-      ? BADGES.length + " badges · " + DATA.site_count + " Superchargers"
-      : rows.length + " of " + BADGES.length + " badges · " + siteTotal +
-        (siteTotal === 1 ? " Supercharger" : " Superchargers"));
+      ? ui("summaryAll", {
+          badges: noun("badge", BADGES.length), sites: noun("supercharger", DATA.site_count)
+        })
+      : ui("summaryFiltered", {
+          visible: numberFormat.format(rows.length), total: numberFormat.format(BADGES.length),
+          sites: noun("supercharger", siteTotal)
+        }));
 
     BADGES.forEach(function (b) {
       rowEl[b.badge].hidden = !want.has(b.badge);
@@ -974,7 +1880,9 @@ document.addEventListener("DOMContentLoaded", function () {
       var n = 0;
       BADGES.forEach(function (b) { if (b.region === region && want.has(b.badge)) n++; });
       h.hidden = n === 0;
-      if (n) text(h, region + " · " + n);
+      if (n) text(h, ui("regionCount", {
+        region: regionName(region), count: numberFormat.format(n)
+      }));
     });
     emptyEl.hidden = rows.length > 0;
   }
@@ -1004,9 +1912,12 @@ document.addEventListener("DOMContentLoaded", function () {
 
   function renderDetail(badge, site) {
     var group = sitesOf[badge.badge];
+    var copy = badgeCopy(badge);
+    selectedSite = site;
 
     text(dTitle, badge.badge);
-    text(dMeta, REASON_LABEL[badge.reason] + " · " + badge.region);
+    dTitle.setAttribute("dir", "auto");
+    text(dMeta, reasonName(badge.reason, "long") + " · " + regionName(badge.region));
 
     // Aggregates and per-site figures must not share the strip: "9
     // Superchargers / 54 stalls total / 250 kW" reads as though 250 kW
@@ -1014,65 +1925,78 @@ document.addEventListener("DOMContentLoaded", function () {
     // belongs in the facts below, which describe the focused Supercharger.
     var stats = "";
     if (badge.site_count > 1) {
-      stats += stat(badge.site_count, "Superchargers");
-      stats += stat(group.reduce(function (a, s) { return a + (s.stalls || 0); }, 0), "stalls total");
+      stats += stat(numberFormat.format(badge.site_count), ui("superchargersHeading"));
+      stats += stat(numberFormat.format(group.reduce(function (a, s) {
+        return a + (s.stalls || 0);
+      }, 0)), ui("statsStallsTotal"));
     } else {
-      stats += stat(site.stalls || "—", "stalls");
-      if (site.power_kw) stats += stat(site.power_kw + " kW", "peak");
+      stats += stat(site.stalls ? numberFormat.format(site.stalls) : "—", ui("statsStalls"));
+      if (site.power_kw) stats += stat(formatPower(site.power_kw), ui("statsPeak"));
     }
-    if (here) stats += stat(fmtDist(distKm[badge.badge]), "away");
+    if (here) stats += stat(fmtDist(distKm[badge.badge]), ui("statsAway"));
     dStats.innerHTML = stats;
 
-    text(dWhy, badge.why);
+    text(dWhy, copy.why);
 
     var notes = "";
-    if (badge.note) notes += '<p class="dnote">' + esc(badge.note) + "</p>";
+    if (copy.note) notes += '<p class="dnote">' + esc(copy.note) + "</p>";
     if (badge.confidence === "approx") {
-      notes += '<p class="dnote">' + (badge.site_count > 1
-        ? "Matched to these Superchargers by proximity"
-        : "Matched to this Supercharger by proximity") +
-        " — Tesla does not publish the mapping, so it is not confirmed in the app.</p>";
+      notes += '<p class="dnote">' + esc(ui(badge.site_count > 1 ? "approxMany" : "approxOne")) +
+        "</p>";
     }
     dNotes.innerHTML = notes;
 
     // Multi-site badges list their Superchargers; picking one re-points the
     // facts below and flies to it.
     if (badge.site_count > 1) {
-      dSites.innerHTML = '<div class="sitelist"><p class="lbl">Superchargers</p>' +
+      dSites.innerHTML = '<div class="sitelist"><p class="lbl">' +
+        esc(ui("superchargersHeading")) + "</p>" +
         group.map(function (s, i) {
           return '<button class="srow" type="button" data-i="' + i + '"' +
             (s === site ? ' aria-current="true"' : "") + ">" +
-            '<span class="snm">' + esc(s.name) + "</span>" +
-            '<span class="sst">' + (s.stalls || "—") + "</span></button>";
+            '<bdi class="snm" dir="auto">' + esc(s.name) + "</bdi>" +
+            '<span class="sst">' + (s.stalls ? numberFormat.format(s.stalls) : "—") +
+            "</span></button>";
         }).join("") + "</div>";
     } else {
       dSites.innerHTML = "";
     }
 
     var facts = [
-      ["Supercharger", esc(site.name)],
-      ["Address", esc([site.address, place(site)].filter(Boolean).join(", "))],
-      ["Coordinates", '<span class="mono">' + site.latitude.toFixed(5) + ", " +
-        site.longitude.toFixed(5) + "</span>"]
+      [ui("factSupercharger"), '<bdi dir="auto">' + esc(site.name) + "</bdi>"],
+      [ui("factAddress"), '<bdi dir="auto">' +
+        esc([site.address, place(site)].filter(Boolean).join(", ")) + "</bdi>"],
+      [ui("factCoordinates"), '<bdi dir="ltr" class="mono">' + site.latitude.toFixed(5) + ", " +
+        site.longitude.toFixed(5) + "</bdi>"]
     ];
-    if (badge.site_count > 1 && site.power_kw) facts.push(["Power", site.power_kw + " kW"]);
-    if (site.elevation_m != null) facts.push(["Elevation", site.elevation_m + " m"]);
-    facts.push(["Listed", site.opened || "—"]);
+    if (badge.site_count > 1 && site.power_kw) {
+      facts.push([ui("factPower"), esc(formatPower(site.power_kw))]);
+    }
+    if (site.elevation_m != null) {
+      facts.push([ui("factElevation"), esc(formatElevation(site.elevation_m))]);
+    }
+    facts.push([ui("factListed"), esc(formatDate(site.opened))]);
     dFacts.innerHTML = facts.map(function (f) {
-      return "<dt>" + f[0] + "</dt><dd" + (f[0] === "Coordinates" ? ' class="mono"' : "") +
-        ">" + f[1] + "</dd>";
+      return "<dt>" + esc(f[0]) + "</dt><dd>" + f[1] + "</dd>";
     }).join("");
 
     var actions =
       '<a class="btn primary" target="_blank" rel="noopener" ' +
         'href="https://www.google.com/maps/search/?api=1&amp;query=' +
-        site.latitude + "," + site.longitude + '">Open in Google Maps</a>';
+        site.latitude + "," + site.longitude + '">' + esc(ui("actionGoogle")) + "</a>";
     if (site.tesla_location_id) {
       actions += '<a class="btn" target="_blank" rel="noopener" ' +
         'href="https://www.tesla.com/findus/location/supercharger/' +
-        encodeURIComponent(site.tesla_location_id) + '">Tesla</a>';
+        encodeURIComponent(site.tesla_location_id) + '">' + esc(ui("actionTesla")) + "</a>";
     }
     dActions.innerHTML = actions;
+  }
+
+  function cameraForSites(sites, maxZoom) {
+    if (!map) return null;
+    return map.cameraForBounds(boundsForSites(sites), {
+      padding: framePad(), maxZoom: Math.min(maxZoom, map.getMaxZoom())
+    });
   }
 
   dSites.addEventListener("click", function (e) {
@@ -1080,8 +2004,11 @@ document.addEventListener("DOMContentLoaded", function () {
     if (!btn || !selected) return;
     var s = sitesOf[selected][+btn.dataset.i];
     renderDetail(byName[selected], s);
-    map.flyToBounds(L.latLngBounds([[s.latitude, s.longitude], [s.latitude, s.longitude]]),
-      Object.assign({ maxZoom: Math.max(map.getZoom(), 12), duration: 0.6 }, framePad()));
+    if (map) {
+      var camera = cameraForSites([s],
+        Math.max(map.getZoom(), zoomFor3D([s.longitude, s.latitude])));
+      if (camera) map.flyTo(Object.assign({ duration: 600 }, camera));
+    }
   });
 
   var dBody = detailEl.querySelector(".dbody");
@@ -1093,12 +2020,24 @@ document.addEventListener("DOMContentLoaded", function () {
     renderDetail(badge, site);
     detailEl.hidden = false;
     dBody.scrollTop = 0;
+    // Instantly, not animated: frame() measures this card as an obstacle the
+    // moment showDetail returns, and a card mid-animation reports a geometry it
+    // is about to leave. The card is appearing from nothing anyway, so there is
+    // no motion worth preserving.
+    sheetSnap(detailSheet, "half", true);
     closeEl.focus();
   }
 
   function closeDetail(refocus) {
     if (detailEl.hidden) return;
     detailEl.hidden = true;
+    // Next open starts from the middle detent rather than wherever this one was
+    // dragged to, and nothing is left behind for another layout to inherit.
+    detailSheet.at = "half";
+    cancelFinish(detailSheet);
+    detailEl.style.removeProperty("--h");
+    detailEl.style.removeProperty("--y");
+    detailEl.classList.remove("is-dragging", "no-anim");
     if (refocus && selected && rowEl[selected]) rowEl[selected].focus();
     // The list is what the URL describes again; the pin stays highlighted so
     // it is still obvious where you were.
@@ -1112,6 +2051,324 @@ document.addEventListener("DOMContentLoaded", function () {
     if (e.key === "Escape") closeDetail(true);
   });
 
+  /* --------------------------------------------------------- bottom sheet ---
+     On a phone the two cards are draggable sheets rather than fixed furniture.
+     A 64%-tall list with no way to move it leaves the map -- the actual content
+     -- a third of the screen, and every pin underneath it untappable.
+
+     Three detents:
+
+       FULL  bounded by the CONTROL COLUMN, not by a percentage of the screen.
+             That makes "the zoom buttons and the attribution are reachable"
+             true at every detent by construction rather than by a test, which
+             matters because the attribution is a licence requirement and the
+             first version of this layout hid it behind the sheet entirely.
+       PEEK  measured from where the search field (or the detail card's stat
+             strip) actually ended up, because the header wraps differently at
+             every width and a hardcoded number would clip it on some phone.
+       HALF  the midpoint, so the ordering peek < half < full holds whatever
+             those two measure.
+
+     Inert unless layout() === "sheet". Desktop and landscape dock their cards
+     to an edge, where there is nothing to drag. */
+
+  var SHEET = {
+    gap: 12,       // between the bottom of the control column and a full sheet
+    flick: 0.5,    // px/ms -- above this a release is a throw, not a placement
+    rubber: 0.28,  // how much of your movement survives past either end
+    minPeek: 132,
+    slop: 8        // finger travel before a touch on the list becomes a drag
+  };
+  var DETENT_ORDER = ["peek", "half", "full"];
+
+  // Opens at HALF, not FULL. A map app that starts with the index covering the
+  // map has buried its own content -- and at FULL every pin is behind the
+  // sheet, so there is nothing to tap even if you can see it.
+  var panelSheet = {
+    el: panelEl, grab: document.getElementById("panel-grab"),
+    scroll: listEl, peekSel: ".search", dismissible: false, at: "half"
+  };
+  var detailSheet = {
+    el: detailEl, grab: document.getElementById("detail-grab"),
+    scroll: dBody, peekSel: ".stats", dismissible: true, at: "half"
+  };
+  var allSheets = [panelSheet, detailSheet];
+
+  function sheetMode() { return layout() === "sheet"; }
+
+  // Measured from the live controls rather than assumed, so adding one later
+  // cannot silently push the attribution under a full sheet.
+  //
+  // Deliberately the control GROUPS and not their corner container: MapLibre
+  // floats the groups, so the container collapses to zero height and reports an
+  // empty rect. Measuring it returned a 72px reserve against a control column
+  // that actually runs to 201px, which put the attribution -- a licence
+  // requirement -- behind a full sheet.
+  function controlReserve() {
+    var groups = document.querySelectorAll(
+      ".maplibregl-ctrl-top-right > *, .maplibregl-ctrl-top-left > *");
+    var bottom = 0;
+    for (var i = 0; i < groups.length; i++) {
+      var r = groups[i].getBoundingClientRect();
+      if (r.height) bottom = Math.max(bottom, r.bottom);
+    }
+    return bottom ? bottom + SHEET.gap : 72;
+  }
+
+  function detents(s) {
+    // getComputedStyle resolves the whole calc(), including the safe-area inset
+    // and the keyboard offset, to the pixel value actually in effect.
+    var bottom = parseFloat(getComputedStyle(s.el).bottom) || 0;
+    var full = Math.max(220, window.innerHeight - bottom - controlReserve());
+    var target = s.el.querySelector(s.peekSel);
+    // Translate-invariant: both rects move together, so this measures the same
+    // distance whatever the sheet's current offset. It relies on the header
+    // being `flex: none` in this layout -- a shrinking header would make the
+    // peek height depend on the peek height.
+    var raw = target
+      ? target.getBoundingClientRect().bottom - s.el.getBoundingClientRect().top + 12
+      : SHEET.minPeek;
+    var peek = Math.min(Math.max(raw, SHEET.minPeek), full * 0.5);
+    return { peek: peek, half: peek + (full - peek) * 0.5, full: full };
+  }
+
+  function currentY(s) { return parseFloat(s.el.style.getPropertyValue("--y")) || 0; }
+  function currentH(s) {
+    return parseFloat(s.el.style.getPropertyValue("--h")) ||
+           s.el.getBoundingClientRect().height;
+  }
+  function setY(s, y) { s.el.style.setProperty("--y", y + "px"); }
+
+  // --y holds a transition's END value from the moment it is set, so it is the
+  // wrong number for anything that needs to know where the sheet is RIGHT NOW.
+  function liveY(s) {
+    var t = getComputedStyle(s.el).transform;
+    if (!t || t === "none") return 0;
+    var m = /matrix\(([^)]+)\)/.exec(t);
+    if (m) return parseFloat(m[1].split(",")[5]) || 0;
+    var m3 = /matrix3d\(([^)]+)\)/.exec(t);
+    return m3 ? parseFloat(m3[1].split(",")[13]) || 0 : 0;
+  }
+
+  // Apply a geometry change with the transition suppressed, committing it
+  // before the class comes back off so the next change animates from here.
+  function noAnim(s, fn) {
+    s.el.classList.add("no-anim");
+    fn();
+    void s.el.offsetHeight;
+    s.el.classList.remove("no-anim");
+  }
+
+  function syncGrab(s) {
+    if (s.grab) s.grab.setAttribute("aria-expanded", s.at === "peek" ? "false" : "true");
+  }
+
+  function cancelFinish(s) {
+    if (!s.finish) return;
+    s.el.removeEventListener("transitionend", s.finish);
+    clearTimeout(s.finishT);
+    s.finish = null;
+  }
+
+  // Height is the RESTING representation and the transform is the MOVING one:
+  // animating height reflows the scroll container every frame, while a resting
+  // transform would hang .dfoot -- and its primary action -- below the bottom
+  // of the screen. So the animation runs on the offset and the height is
+  // swapped back in once the motion stops.
+  //
+  // The layout height is held at the TALLER of the two for the duration, so the
+  // offset only ever needs to be positive. A negative offset does not collapse
+  // a bottom-anchored card, it lifts the whole card off the bottom edge: going
+  // 709px -> 231px that way sent the sheet flying up to [213, 444] and back
+  // instead of sliding down.
+  function settleTo(s, h, name) {
+    var el = s.el;
+    var shown = currentH(s) - currentY(s);
+    var anim = Math.max(shown, h);
+    cancelFinish(s);
+    noAnim(s, function () {
+      el.style.setProperty("--h", anim + "px");
+      setY(s, anim - shown);
+    });
+    setY(s, anim - h);
+    s.at = name;
+    syncGrab(s);
+
+    s.finish = function (e) {
+      if (e && (e.target !== el || e.propertyName !== "transform")) return;
+      cancelFinish(s);
+      noAnim(s, function () {
+        el.style.setProperty("--h", h + "px");
+        setY(s, 0);
+      });
+    };
+    el.addEventListener("transitionend", s.finish);
+    // An offset that did not actually change fires no transition at all, which
+    // would leave the height swap pending forever.
+    s.finishT = setTimeout(function () { if (s.finish) s.finish(null); }, 420);
+  }
+
+  function sheetSnap(s, name, instant) {
+    if (!sheetMode() || s.el.hidden) return;
+    var h = detents(s)[name];
+    if (!instant) { settleTo(s, h, name); return; }
+    cancelFinish(s);
+    noAnim(s, function () {
+      s.el.style.setProperty("--h", h + "px");
+      setY(s, 0);
+    });
+    s.at = name;
+    syncGrab(s);
+  }
+
+  // Re-resolve every detent against the current viewport. Called at start and
+  // whenever the viewport changes shape, so the sheet keeps its detent rather
+  // than its pixel height across a rotation or a URL-bar collapse.
+  function sheetSync() {
+    allSheets.forEach(function (s) {
+      if (!sheetMode()) {
+        cancelFinish(s);
+        s.el.style.removeProperty("--h");
+        s.el.style.removeProperty("--y");
+        s.el.classList.remove("is-dragging", "no-anim");
+        return;
+      }
+      if (s.el.hidden) return;
+      sheetSnap(s, s.at, true);
+    });
+  }
+
+  /* ------------------------------------------------------------- the drag --- */
+  var drag = null;
+  var suppressClick = false;
+
+  function beginDrag(s, y, t) {
+    if (!sheetMode() || drag || s.el.hidden) return false;
+    // A grab that lands mid-snap has to start from what is on screen, not from
+    // where the snap was heading -- pin the offset to its live value first.
+    var at = liveY(s);
+    cancelFinish(s);
+    noAnim(s, function () { setY(s, at); });
+    drag = { s: s, y0: y, last: y, lastT: t, v: 0, h: currentH(s),
+             shown0: currentH(s) - at, d: detents(s), moved: false };
+    s.el.classList.add("is-dragging");
+    return true;
+  }
+
+  function moveDrag(y, t) {
+    if (!drag) return;
+    var s = drag.s, d = drag.d;
+    var shown = drag.shown0 - (y - drag.y0);
+    // Past either end the sheet still follows the finger, but reluctantly --
+    // the give is what tells you that you have reached the end. The detail card
+    // is exempt below peek, because that is the throw that dismisses it.
+    if (shown > d.full) shown = d.full + (shown - d.full) * SHEET.rubber;
+    else if (shown < d.peek && !s.dismissible) {
+      shown = d.peek - (d.peek - shown) * SHEET.rubber;
+    }
+    setY(s, drag.h - shown);
+    if (Math.abs(y - drag.y0) > 4) drag.moved = true;
+    var dt = t - drag.lastT;
+    if (dt > 0) { drag.v = (y - drag.last) / dt; drag.last = y; drag.lastT = t; }
+  }
+
+  function nearestIndex(vals, x) {
+    var best = 0;
+    for (var i = 1; i < vals.length; i++) {
+      if (Math.abs(vals[i] - x) < Math.abs(vals[best] - x)) best = i;
+    }
+    return best;
+  }
+
+  function endDrag() {
+    if (!drag) return;
+    var s = drag.s, d = drag.d, v = drag.v;
+    var shown = drag.h - currentY(s);
+    s.el.classList.remove("is-dragging");
+    suppressClick = drag.moved;
+    drag = null;
+
+    // Thrown down past the peek, or simply released below it, closes the detail
+    // card. The list never dismisses: it is the app's primary surface and there
+    // would be no gesture left to bring it back.
+    if (s.dismissible &&
+        (shown < d.peek * 0.62 || (v > SHEET.flick && shown <= d.peek + 8))) {
+      closeDetail(false);
+      return;
+    }
+
+    var vals = DETENT_ORDER.map(function (n) { return d[n]; });
+    var idx;
+    // A throw goes to the next detent ALONG, not to the nearest one -- that is
+    // the whole difference between flicking a sheet and nudging it.
+    if (v > SHEET.flick) {
+      idx = 0;
+      for (var i = vals.length - 1; i >= 0; i--) { if (vals[i] < shown - 1) { idx = i; break; } }
+    } else if (v < -SHEET.flick) {
+      idx = vals.length - 1;
+      for (var j = 0; j < vals.length; j++) { if (vals[j] > shown + 1) { idx = j; break; } }
+    } else {
+      idx = nearestIndex(vals, shown);
+    }
+    settleTo(s, vals[idx], DETENT_ORDER[idx]);
+  }
+
+  allSheets.forEach(function (s) {
+    // Drag from the grabber or from the card's non-scrolling header. Both carry
+    // touch-action: none, or the browser claims the gesture before pointermove
+    // ever fires.
+    var handles = [s.grab, s.el.querySelector(".head"), s.el.querySelector(".dhead")]
+      .filter(Boolean);
+    handles.forEach(function (h) {
+      h.addEventListener("pointerdown", function (e) {
+        if (e.pointerType === "mouse" && e.button !== 0) return;
+        // The search field, the chips and the close button keep their own jobs.
+        if (e.target !== s.grab && e.target.closest("input, button, a")) return;
+        if (!beginDrag(s, e.clientY, e.timeStamp)) return;
+        try { h.setPointerCapture(e.pointerId); } catch (err) {}
+      });
+      h.addEventListener("pointermove", function (e) { moveDrag(e.clientY, e.timeStamp); });
+      h.addEventListener("pointerup", endDrag);
+      h.addEventListener("pointercancel", endDrag);
+    });
+
+    // Tap or Enter on the grabber cycles the detents, so the sheet is operable
+    // without a drag at all -- by keyboard, by switch control, or by anyone for
+    // whom press-and-slide is not a reliable gesture.
+    if (s.grab) {
+      s.grab.addEventListener("click", function () {
+        if (suppressClick) { suppressClick = false; return; }
+        if (!sheetMode()) return;
+        var i = DETENT_ORDER.indexOf(s.at);
+        sheetSnap(s, DETENT_ORDER[(i + 1) % DETENT_ORDER.length]);
+      });
+    }
+
+    // The pull-down-from-the-top-of-the-list gesture. Pointer events cannot
+    // express it: inside a scroll container the browser owns vertical panning
+    // and cancels the pointer stream the moment it decides to scroll. A
+    // non-passive touchmove is the only place to judge, per frame, whether this
+    // is still a scroll or has become a drag.
+    var pull = null;
+    s.scroll.addEventListener("touchstart", function (e) {
+      pull = (sheetMode() && e.touches.length === 1 && s.scroll.scrollTop <= 0)
+        ? e.touches[0].clientY : null;
+    }, { passive: true });
+    s.scroll.addEventListener("touchmove", function (e) {
+      if (pull == null || e.touches.length !== 1) return;
+      var y = e.touches[0].clientY;
+      if (!drag) {
+        if (y - pull < SHEET.slop) return;        // still ambiguous, or upward
+        if (s.scroll.scrollTop > 0) { pull = null; return; }
+        if (!beginDrag(s, pull, e.timeStamp)) { pull = null; return; }
+      }
+      e.preventDefault();
+      moveDrag(y, e.timeStamp);
+    }, { passive: false });
+    s.scroll.addEventListener("touchend", function () { pull = null; endDrag(); }, { passive: true });
+    s.scroll.addEventListener("touchcancel", function () { pull = null; endDrag(); }, { passive: true });
+  });
+
   /* ------------------------------------------------------ select and fly --- */
   var byName = {};
   BADGES.forEach(function (b) { byName[b.badge] = b; });
@@ -1120,9 +2377,7 @@ document.addEventListener("DOMContentLoaded", function () {
     Object.keys(marks).forEach(function (k) {
       var on = k === name;
       marks[k].forEach(function (m) {
-        var el = m.marker.getElement();   // null while the marker is filtered out
-        if (el) el.classList.toggle("is-selected", on);
-        m.marker.setZIndexOffset(on ? 1000 : 0);
+        m.element.classList.toggle("is-selected", on);
       });
     });
     Object.keys(rowEl).forEach(function (k) {
@@ -1137,29 +2392,37 @@ document.addEventListener("DOMContentLoaded", function () {
   // card would describe a place the map never reached. Landing is always forced.
   function frame(name, site) {
     var group = marks[name];
-    var pts = group.map(function (m) { return [m.site.latitude, m.site.longitude]; });
-    var bounds = L.latLngBounds(pts);
     // Open the card BEFORE measuring: framePad() treats it as an obstacle, and
     // a card that is still hidden measures zero -- which would fly the site to
     // exactly the spot the card is about to cover. Opening on click rather
     // than on landing is also simply more responsive.
     showDetail(byName[name], site || group[0].site);
-    // flyToBounds takes bounds where flyTo could not, so multi-site badges get
-    // the flight too instead of jumping. A degenerate single-point bounds is
-    // safe precisely because an explicit numeric maxZoom is passed.
-    var maxZoom = group.length > 1 ? 9 : Math.max(map.getZoom(), 9);
-    var opts = Object.assign({ maxZoom: maxZoom }, framePad());
+    if (!map) return;
+
+    // A pin click always names one Supercharger, and so does a single-site
+    // badge -- both take the closest permitted view. A multi-site badge names
+    // sites spread over hundreds of kilometres, so it keeps the wide view;
+    // picking a Supercharger inside the card moves to that individual site.
+    var target = site || (group.length === 1 ? group[0].site : null);
+    var camera = target
+      ? cameraForSites([target], Math.max(map.getZoom(),
+          zoomFor3D([target.longitude, target.latitude])))
+      // MapLibre's 512px world makes this one level lower than the old Leaflet
+      // target while preserving the same visible ground scale.
+      : cameraForSites(group.map(function (m) { return m.site; }), 8);
+    if (!camera) return;
     var done = false;
 
     function land() {
       if (done) return;
       done = true;
-      map.fitBounds(bounds, Object.assign({ animate: false }, opts));
+      map.stop();
+      map.jumpTo(camera);
     }
 
     if (document.hidden) { land(); return; }
     map.once("moveend", land);
-    map.flyToBounds(bounds, Object.assign({ duration: 0.7 }, opts));
+    map.flyTo(Object.assign({ duration: 700 }, camera));
     setTimeout(land, 1400);
   }
 
@@ -1192,10 +2455,13 @@ document.addEventListener("DOMContentLoaded", function () {
   var nearEl = document.getElementById("near");
   var nearLbl = document.getElementById("nearlbl");
   var nearMsg = document.getElementById("nearmsg");
+  var nearMessageKey = null;
+  var locating = false;
 
-  function say(msg) {
-    text(nearMsg, msg || "");
-    nearMsg.hidden = !msg;
+  function say(key) {
+    nearMessageKey = key || null;
+    text(nearMsg, key ? ui(key) : "");
+    nearMsg.hidden = !key;
   }
 
   nearEl.addEventListener("click", function () {
@@ -1207,10 +2473,11 @@ document.addEventListener("DOMContentLoaded", function () {
       render();
       return;
     }
-    if (!navigator.geolocation) { say("This browser can't share a location."); return; }
+    if (!navigator.geolocation) { say("locationUnsupported"); return; }
 
     nearEl.disabled = true;
-    text(nearLbl, "Locating…");
+    locating = true;
+    text(nearLbl, ui("locating"));
     say("");
     navigator.geolocation.getCurrentPosition(function (pos) {
       here = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -1224,42 +2491,296 @@ document.addEventListener("DOMContentLoaded", function () {
       order = BADGES.map(function (b) { return b.badge; })
         .sort(function (a, b) { return distKm[a] - distKm[b]; });
       nearEl.disabled = false;
+      locating = false;
       nearEl.setAttribute("aria-pressed", "true");
-      text(nearLbl, "Near me");
+      text(nearLbl, ui("nearMe"));
       applyOrder();
       render();
       listEl.scrollTop = 0;
     }, function (err) {
       nearEl.disabled = false;
-      text(nearLbl, "Near me");
-      say(err && err.code === 1
-        ? "Location permission denied — still sorted by region."
-        : "Couldn't get your location — still sorted by region.");
+      locating = false;
+      text(nearLbl, ui("nearMe"));
+      say(err && err.code === 1 ? "locationDenied" : "locationFailed");
     }, { timeout: 10000, maximumAge: 600000 });
   });
 
+  /* ------------------------------------------------- the on-screen keyboard --
+     iOS does not shrink the layout viewport when the keyboard opens, so a
+     bottom-anchored sheet stays exactly where it was: behind the keyboard,
+     along with the list you are typing to filter. Android mostly does shrink
+     it, in which case the figure below is 0 and nothing happens.
+
+     visualViewport is the only surface that reports this. offsetTop matters as
+     well as height: iOS scrolls the visual viewport up to keep the focused
+     field visible, and the keyboard's real extent is what is left below it. */
+  function syncKeyboardInset() {
+    var v = window.visualViewport;
+    var kb = v ? Math.max(0, window.innerHeight - v.height - v.offsetTop) : 0;
+    // Sub-pixel noise on every scroll frame would otherwise rewrite the
+    // property, invalidating the sheet's geometry constantly.
+    if (Math.abs(kb - lastKb) < 1) return;
+    lastKb = kb;
+    document.documentElement.style.setProperty("--kb", kb + "px");
+    sheetSync();
+  }
+  var lastKb = 0;
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", syncKeyboardInset);
+    window.visualViewport.addEventListener("scroll", syncKeyboardInset);
+  }
+  // Typing is the one moment the list matters more than the map.
+  qEl.addEventListener("focus", function () {
+    if (sheetMode()) sheetSnap(panelSheet, "full");
+  });
+
+  /* ---------------------------------------------------- language and region --- */
+  var languageEl = document.getElementById("language");
+  var countryController = null;
+  var countryTimer = 0;
+  var started = false;
+
+  function relabelMapControls() {
+    if (!map) return;
+    var labels = [
+      [".maplibregl-ctrl-zoom-in", "zoomIn"],
+      [".maplibregl-ctrl-zoom-out", "zoomOut"],
+      [".maplibregl-ctrl-compass", "resetBearing"],
+      [".maplibregl-ctrl-attrib-button", "toggleAttribution"]
+    ];
+    labels.forEach(function (entry) {
+      var button = map.getContainer().querySelector(entry[0]);
+      if (!button) return;
+      button.title = ui(entry[1]);
+      button.setAttribute("aria-label", ui(entry[1]));
+    });
+    var canvas = map.getCanvas();
+    canvas.setAttribute("aria-label", ui("mapControlTitle"));
+    canvas.setAttribute("role", "region");
+    var attributionLabel = map.getContainer().querySelector(".iconic-attribution");
+    if (attributionLabel && attributionLabel.firstChild) {
+      attributionLabel.firstChild.nodeValue = ui("siteData") + " ";
+    }
+  }
+
+  function syncLanguageOptions() {
+    var choice = localeOverride || "auto";
+    languageEl.innerHTML = "";
+    var automatic = document.createElement("option");
+    automatic.value = "auto";
+    automatic.textContent = ui("automatic");
+    languageEl.appendChild(automatic);
+    I18N.order.forEach(function (key) {
+      var option = document.createElement("option");
+      option.value = key;
+      option.lang = key;
+      option.dir = LOCALES[key].dir;
+      option.textContent = LOCALES[key].name;
+      languageEl.appendChild(option);
+    });
+    languageEl.value = choice;
+  }
+
+  function relabelStatic() {
+    document.title = ui("documentTitle");
+    text(document.getElementById("app-title"), ui("heading"));
+    text(document.getElementById("total"), ui("summaryDated", {
+      badges: noun("badge", DATA.badge_count),
+      sites: noun("supercharger", DATA.site_count),
+      date: formatDate(DATA.snapshot_date)
+    }));
+    document.getElementById("map").setAttribute("aria-label", ui("mapAria"));
+    text(document.getElementById("map-error-title"), ui("mapUnavailableTitle"));
+    if (!mapErrorEl.hidden) text(mapErrorMessageEl, ui(mapErrorKey));
+    qEl.placeholder = ui("searchPlaceholder");
+    qEl.setAttribute("aria-label", ui("searchAria"));
+    clearEl.setAttribute("aria-label", ui("clearSearch"));
+    filtersEl.setAttribute("aria-label", ui("filterAria"));
+    text(nearLbl, ui(locating ? "locating" : "nearMe"));
+    if (nearMessageKey) text(nearMsg, ui(nearMessageKey));
+    text(document.getElementById("footnote"), ui("footnote"));
+    detailEl.setAttribute("aria-label", ui("detailsAria"));
+    closeEl.setAttribute("aria-label", ui("closeDetails"));
+    document.getElementById("panel-grab").setAttribute("aria-label", ui("resizeList"));
+    document.getElementById("detail-grab").setAttribute("aria-label", ui("resizeDetails"));
+    text(document.getElementById("language-label"), ui("languageLabel"));
+    languageEl.setAttribute("aria-label", ui("languageLabel"));
+  }
+
+  function detailFocusToken() {
+    var activeEl = document.activeElement;
+    if (!activeEl || !detailEl.contains(activeEl)) return null;
+    if (activeEl.id) return { id: activeEl.id };
+    if (activeEl.matches(".srow")) return { site: activeEl.dataset.i };
+    if (activeEl.matches("a[href]")) return { href: activeEl.getAttribute("href") };
+    return null;
+  }
+  function restoreDetailFocus(token) {
+    if (!token) return;
+    var target = token.id ? document.getElementById(token.id) :
+      token.site != null ? dSites.querySelector('.srow[data-i="' + token.site + '"]') :
+      token.href ? Array.prototype.find.call(dActions.querySelectorAll("a[href]"), function (a) {
+        return a.getAttribute("href") === token.href;
+      }) : null;
+    if (target) target.focus({ preventScroll: true });
+  }
+
+  function applyLocale(nextLocale) {
+    if (!Object.prototype.hasOwnProperty.call(LOCALES, nextLocale)) nextLocale = I18N.defaultLocale;
+    var listScroll = listEl.scrollTop;
+    var detailScroll = dBody.scrollTop;
+    var focusToken = detailFocusToken();
+    var directionChanged = locale.dir !== LOCALES[nextLocale].dir;
+    localeKey = nextLocale;
+    locale = LOCALES[localeKey];
+    resetFormatters();
+    document.documentElement.lang = localeKey;
+    document.documentElement.dir = locale.dir;
+
+    relabelStatic();
+    syncLanguageOptions();
+    relabelChips();
+    relabelRows();
+    relabelMarkers();
+    rebuildSearchIndex();
+    if (selected && !detailEl.hidden) renderDetail(byName[selected], selectedSite || sitesOf[selected][0]);
+    // A query can match only the old translation. Locale changes relabel the
+    // results but must not silently discard the user's open selection/detail.
+    if (started) render(true);
+    listEl.scrollTop = listScroll;
+    dBody.scrollTop = detailScroll;
+    restoreDetailFocus(focusToken);
+
+    if (map) {
+      if (directionChanged) {
+        syncControlCorner();
+        map.resize();
+      }
+      localizeMapLabels();
+      relabelMapControls();
+    }
+  }
+
+  function stopCountryLookup() {
+    clearTimeout(countryTimer);
+    countryTimer = 0;
+    if (countryController) countryController.abort();
+    countryController = null;
+  }
+  function lookupCountry() {
+    if (localeOverride || ipCountry || countryController || !window.fetch || !window.AbortController) return;
+    countryController = new AbortController();
+    var controller = countryController;
+    countryTimer = setTimeout(function () { controller.abort(); }, 1500);
+    fetch("https://api.country.is/", {
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal
+    }).then(function (response) {
+      if (!response.ok) throw new Error("country lookup failed");
+      return response.json();
+    }).then(function (body) {
+      if (localeOverride || controller !== countryController) return;
+      var country = body && typeof body.country === "string" ? body.country.toUpperCase() : "";
+      if (!/^[A-Z]{2}$/.test(country)) return;
+      ipCountry = country;
+      MILES = country === "US";
+      storageSet("sessionStorage", COUNTRY_KEY, JSON.stringify({
+        country: country, expires: Date.now() + COUNTRY_TTL
+      }));
+      applyLocale(localeForCountry(country));
+    }).catch(function () {
+      // Language negotiation is an enhancement; browser language remains live
+      // when the service is blocked, slow, offline, or returns malformed data.
+    }).then(function () {
+      if (controller !== countryController) return;
+      clearTimeout(countryTimer);
+      countryTimer = 0;
+      countryController = null;
+    });
+  }
+
+  languageEl.addEventListener("change", function () {
+    var choice = languageEl.value;
+    if (choice === "auto") {
+      localeOverride = null;
+      storageSet("localStorage", LOCALE_KEY, null);
+      ipCountry = cachedCountry();
+      MILES = ipCountry ? ipCountry === "US" : /^en-US\b/i.test(navigator.language || "");
+      applyLocale(ipCountry ? localeForCountry(ipCountry) : browserLocale);
+      lookupCountry();
+      return;
+    }
+    if (!Object.prototype.hasOwnProperty.call(LOCALES, choice)) return;
+    stopCountryLookup();
+    localeOverride = choice;
+    storageSet("localStorage", LOCALE_KEY, choice);
+    applyLocale(choice);
+  });
+
+  window.__ICONIC_I18N__ = {
+    applyLocale: applyLocale,
+    matchLocale: matchLocale,
+    localeForCountry: localeForCountry,
+    get locale() { return localeKey; },
+    get country() { return ipCountry; },
+    get miles() { return MILES; }
+  };
+
   /* -------------------------------------------------------------- start --- */
+  applyLocale(localeKey);
   render();
+  started = true;
+
+  // The populated list is what the sheet measures its detents against, so this
+  // has to follow render() -- and precede the first camera, which treats the
+  // sheet as an obstacle.
+  sheetSync();
+
+  // On narrow screens the populated list determines the bottom sheet's final
+  // height, so establish both the initial camera and its zoom-out floor only
+  // after render() has completed layout, and before a deep link can select a
+  // site and replace the overview with its own framing.
+  if (map) syncOverviewFloor(true);
 
   // #<badge name> deep-links, so a specific badge is shareable.
   function openFromHash() {
     var name;
-    try { name = decodeURIComponent(location.hash.slice(1)); } catch (e) { return; }
-    if (name && marks[name]) select(name, true);
+    try { name = decodeURIComponent(location.hash.slice(1)); } catch (e) { name = ""; }
+    if (name && marks[name]) { select(name, true); return; }
+    // Back/forward navigation to an empty or unknown fragment must not leave a
+    // detail card describing a URL that no longer selects that badge.
+    if (selected) {
+      rowEl[selected].removeAttribute("aria-current");
+      highlight(null);
+      selected = null;
+      selectedSite = null;
+      closeDetail(false);
+    }
   }
   window.addEventListener("hashchange", openFromHash);
   openFromHash();
+  lookupCountry();
 
   // Both cards' geometry is part of every framing decision, so a resize that
   // swaps the side panel for the bottom sheet has to be re-framed.
+  //
+  // On a phone `resize` also fires every time the URL bar slides away, which is
+  // constantly. Only the global overview camera is responsive: selected and
+  // explored cameras stay where the user put them unless setMinZoom() has to
+  // clamp them to a newly higher floor.
   var rt = 0;
   window.addEventListener("resize", function () {
     clearTimeout(rt);
     rt = setTimeout(function () {
-      if (selected && marks[selected]) {
-        var pts = marks[selected].map(function (m) { return [m.site.latitude, m.site.longitude]; });
-        map.fitBounds(L.latLngBounds(pts), Object.assign(
-          { animate: false, maxZoom: Math.max(map.getZoom(), 9) }, framePad()));
+      sheetSync();
+      if (!map) return;
+      var wasAtOverview = map.getZoom() <= map.getMinZoom() + 0.001;
+      map.resize();
+      var overview = syncOverviewFloor(false);
+      if (wasAtOverview && overview) {
+        map.stop();
+        map.jumpTo(overview);
       }
     }, 200);
   });

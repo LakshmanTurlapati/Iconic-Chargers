@@ -3,7 +3,7 @@
 //
 //   node scripts/bench.mjs [url] [--runs=N] [--cpu=6] [--net=3g] [--headful]
 //
-// Input is dispatched through CDP, not synthesised in-page, so Leaflet's real
+// Input is dispatched through CDP, not synthesised in-page, so MapLibre's real
 // drag/zoom handlers run. Frames are sampled with requestAnimationFrame inside
 // the page -- which is why this must not run in a background tab: hidden tabs
 // throttle rAF and every number comes back a fiction.
@@ -24,6 +24,7 @@ const RUNS = Number(flag("runs", 3));
 const CPU = Number(flag("cpu", 6));
 const NET = flag("net", "none");
 const DPR = Number(flag("dpr", 2));
+const NOTCH = 120 * DPR; // CDP divides wheel deltas by the emulated scale factor
 const HEADFUL = args.includes("--headful");
 const PORT = 9222 + (process.pid % 500);
 const PROFILE = `/tmp/bench-chrome-${process.pid}`;
@@ -79,6 +80,26 @@ async function evaluate(expr, awaitPromise = false) {
   return r.result.value;
 }
 
+await send("Page.enable");
+await send("Runtime.enable");
+await send("Page.addScriptToEvaluateOnNewDocument", { source: `
+  Object.defineProperty(window, 'maplibregl', {
+    configurable: true,
+    set: function (v) {
+      v.Map = new Proxy(v.Map, { construct: function (Target, args, NewTarget) {
+        var instance = Reflect.construct(Target, args, NewTarget);
+        window.__map = instance;
+        instance.once('load', function () { performance.mark('maplibre-style-ready'); });
+        return instance;
+      }});
+      Object.defineProperty(window, 'maplibregl', {
+        value: v, writable: true, configurable: true
+      });
+    },
+    get: function () { return undefined; }
+  });
+` });
+
 // Frame sampler. Resolves with the distribution once `ms` has elapsed.
 const PROBE = `
 window.__probe = (ms) => new Promise((res) => {
@@ -97,24 +118,37 @@ window.__probe = (ms) => new Promise((res) => {
 
 const NET_STATS = `(() => {
   const r = performance.getEntriesByType('resource');
-  const tiles = r.filter((x) => x.name.includes('basemaps.'));
+  const mapAssets = r.filter((x) => {
+    try { return new URL(x.name).host === 'tiles.openfreemap.org'; } catch { return false; }
+  });
+  const vectors = mapAssets.filter((x) => /\\.pbf(?:\\?|$)/.test(x.name));
+  const country = r.filter((x) => {
+    try { return new URL(x.name).host === 'api.country.is'; } catch { return false; }
+  });
   const nav = performance.getEntriesByType('navigation')[0];
   const fcp = performance.getEntriesByType('paint').find((p) => p.name === 'first-contentful-paint');
+  const styleReady = performance.getEntriesByName('maplibre-style-ready')[0];
   const end = (x) => x.startTime + x.duration;
   // transferSize is 0 for cross-origin responses without Timing-Allow-Origin,
   // so fall back to the decoded body -- an over-estimate for compressed text,
   // but never the silent 0 that made the first run look free.
   const bytes = (x) => x.transferSize || x.decodedBodySize || 0;
-  // Leaflet gates everything: the map cannot initialise until it lands.
-  const lib = r.filter((x) => /leaflet\\.js$/.test(x.name)).map(end);
+  // The local GL bundle gates map construction; the style mark includes the
+  // first complete vector render and is the real useful-map milestone.
+  const lib = r.filter((x) => /maplibre-gl\\.js$/.test(x.name)).map(end);
   const hosts = [...new Set(r.map((x) => new URL(x.name).host))];
-  return { requests: r.length, tiles: tiles.length, origins: hosts.length,
+  const vectorSources = Object.values(__map.getStyle().sources).filter((s) =>
+    s.type === 'vector' && /tiles\\.openfreemap\\.org\\/planet/.test(s.url || '')).length;
+  return { requests: r.length, mapAssets: mapAssets.length, vectorTiles: vectors.length,
+           vectorSources, countryRequests: country.length,
+           countrySettledMs: country.length ? +Math.max(...country.map(end)).toFixed(0) : null,
+           origins: hosts.length,
            thirdParty: hosts.filter((h) => !h.startsWith('127.')),
-           retinaTiles: tiles.filter((x) => x.name.includes('@2x')).length,
            kb: +(r.reduce((a, x) => a + bytes(x), 0) / 1024).toFixed(1),
            fcpMs: fcp ? +fcp.startTime.toFixed(0) : null,
-           leafletReadyMs: lib.length ? +Math.max(...lib).toFixed(0) : 0,
-           lastTileMs: tiles.length ? +Math.max(...tiles.map(end)).toFixed(0) : null,
+           maplibreReadyMs: lib.length ? +Math.max(...lib).toFixed(0) : 0,
+           styleReadyMs: styleReady ? +styleReady.startTime.toFixed(0) : null,
+           lastMapAssetMs: mapAssets.length ? +Math.max(...mapAssets.map(end)).toFixed(0) : null,
            domReadyMs: +nav.domContentLoadedEventEnd.toFixed(0) };
 })()`;
 
@@ -133,7 +167,7 @@ async function drag() {
 async function wheelZoom() {
   for (let i = 0; i < 9; i++) {
     await send("Input.dispatchMouseEvent", {
-      type: "mouseWheel", x: 750, y: 480, deltaX: 0, deltaY: -120, buttons: 0,
+      type: "mouseWheel", x: 750, y: 480, deltaX: 0, deltaY: -NOTCH, buttons: 0,
     });
     await sleep(110);
   }
@@ -151,20 +185,27 @@ async function once() {
   await send("Network.enable");
   await send("Network.clearBrowserCache");
   await send("Network.setCacheDisabled", { cacheDisabled: true });
+  if (/^https?:/.test(URL_)) {
+    await send("Storage.clearDataForOrigin", {
+      origin: new URL(URL_).origin,
+      storageTypes: "local_storage,session_storage"
+    });
+  }
   const profile = NET_PROFILES[NET];
   if (profile) await send("Network.emulateNetworkConditions", { ...profile, connectionType: "cellular4g" });
   if (CPU > 1) await send("Emulation.setCPUThrottlingRate", { rate: CPU });
-  // Headless defaults to dpr 1, which silently drops the '{r}' -> '@2x' tiles.
-  // The target machine is a retina Mac, where those tiles are ~2.7x the bytes.
+  // Headless defaults to dpr 1, which understates the WebGL fill and label
+  // workload on the retina Mac this UI is designed for.
   await send("Emulation.setDeviceMetricsOverride", {
     width: 1500, height: 900, deviceScaleFactor: DPR, mobile: false,
   });
 
   await send("Page.navigate", { url: URL_ });
-  // Wait for the markers to exist, then let tiles settle so we measure
+  // Wait for the vector style and markers, then let tiles settle so we measure
   // steady-state interaction rather than first paint.
   for (let i = 0; i < 120; i++) {
-    if (await evaluate(`document.querySelectorAll('.pin').length > 0`)) break;
+    if (await evaluate(`window.__map && __map.isStyleLoaded() &&
+      document.querySelectorAll('.pin').length === 53`)) break;
     await sleep(100);
   }
   await sleep(2500);
@@ -185,9 +226,11 @@ async function once() {
   const dragR = await dragP;
 
   await sleep(500);
+  const zoomStart = await evaluate(`__map.getZoom()`);
   const zoomP = evaluate(`__probe(1500)`, true);
   await wheelZoom();
   const zoomR = await zoomP;
+  const zoomEnd = await evaluate(`__map.getZoom()`);
 
   // Keystroke cost: full synchronous handler time + DOM churn it causes.
   // Cost of a keystroke INCLUDING work the handler defers to a rAF. Measuring
@@ -218,14 +261,19 @@ async function once() {
     return { syncMs: +syncMs.toFixed(1), mutations };
   })()`, true);
 
+  // Give the worker/source pipeline time to schedule destination tiles before
+  // snapshotting interaction-driven network work.
+  await sleep(1000);
+
   // Everything requested since the snapshot above is interaction-driven.
   const during = await evaluate(`(() => {
-    const t = performance.getEntriesByType('resource').filter((x) => x.name.includes('basemaps.'));
+    const t = performance.getEntriesByType('resource').filter((x) => /\\.pbf(?:\\?|$)/.test(x.name));
     return { tiles: t.length,
              lastMs: t.length ? +Math.max(...t.map((x) => x.startTime + x.duration)).toFixed(0) : 0 };
   })()`);
 
-  return { idle, drag: dragR, zoom: zoomR, key, net, during };
+  return { idle, drag: dragR, zoom: zoomR, zoomGain: +(zoomEnd - zoomStart).toFixed(3),
+           key, net, during };
 }
 
 const runs = [];
@@ -239,11 +287,16 @@ const out = {
   idle:  { median: pick("idle.median"), p95: pick("idle.p95") },
   drag:  { median: pick("drag.median"), p95: pick("drag.p95"), worst: pick("drag.worst"), janky: pick("drag.janky") },
   zoom:  { median: pick("zoom.median"), p95: pick("zoom.p95"), worst: pick("zoom.worst"), janky: pick("zoom.janky") },
+  wheelZoomGain: pick("zoomGain"),
   key:   { mutations: pick("key.mutations"), syncMs: pick("key.syncMs") },
-  load:  { requests: pick("net.requests"), tiles: pick("net.tiles"), retinaTiles: pick("net.retinaTiles"),
+  load:  { requests: pick("net.requests"), mapAssets: pick("net.mapAssets"),
+           vectorTiles: pick("net.vectorTiles"), vectorSources: pick("net.vectorSources"),
+           countryRequests: pick("net.countryRequests"),
+           countrySettledMs: pick("net.countrySettledMs"),
            origins: pick("net.origins"), kb: pick("net.kb"),
-           fcpMs: pick("net.fcpMs"), leafletReadyMs: pick("net.leafletReadyMs"),
-           lastTileMs: pick("net.lastTileMs"), domReadyMs: pick("net.domReadyMs"),
+           fcpMs: pick("net.fcpMs"), maplibreReadyMs: pick("net.maplibreReadyMs"),
+           styleReadyMs: pick("net.styleReadyMs"), lastMapAssetMs: pick("net.lastMapAssetMs"),
+           domReadyMs: pick("net.domReadyMs"),
            thirdParty: runs[0].net.thirdParty },
   interactionTiles: pick("during.tiles"),
 };
