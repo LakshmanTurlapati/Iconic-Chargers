@@ -68,12 +68,12 @@ Whistler (2 each).
 |---|---|
 | ⚡ **Markers** | Tesla's own Supercharger marker shape — a capsule with a bolt and a count |
 | 🔢 **The number** | **total stalls**, not live availability — see the note below |
-| 📋 **Sidebar** | lists **badges**, grouped by region, and doubles as the table view |
-| 🎨 **Colour in the list** | why Tesla badges it — flagship · significance · destination |
+| 🔎 **Search** | badge name, Supercharger name, city, country, why it's badged, or anything in the write-up |
+| 🏷️ **Filter** | `All` plus the four regions, additive |
+| 📍 **Near me** | opt-in — sorts by distance to each badge's *nearest* Supercharger |
+| 🪪 **Detail card** | picking a badge opens a card: stats, why, every Supercharger, coordinates, links |
 | 🔗 **Multi-site** | selecting a badge frames **all** its Superchargers at once |
-| 🏷️ **Filter** | the four regions |
-| 🔎 **Search** | badge name, city, country, or anything in the write-up |
-| 🪪 **Deep links** | `web/index.html#Great%20Barrier%20Reef` |
+| 🔖 **Deep links** | `web/index.html#Great%20Barrier%20Reef` |
 
 > **The number is capacity, not availability.** Tesla's map shows how many stalls are *free right
 > now*; this shows how many the site *has*. Same visual language, different meaning — there is no
@@ -84,8 +84,37 @@ water and **8.03:1** over its land, and the `#2c2c2a` bolt and digits at **7.59:
 — past the 4.5:1 bar for text, not just the 3:1 bar for graphics. Swap `--pin-gold` to `#d4af37` for
 an antique gold.
 
+### Styled after Tesla's navigation UI
+
+The map is the substrate — full-bleed, edge to edge — and the search panel floats on it as a
+rounded, blurred card, the way the car does it. On a narrow screen that panel becomes a bottom
+sheet.
+
+Three things that reading Tesla's actual conventions changed:
+
+- **Achromatic, with one reserved accent.** Tesla's UI is white/grey/black everywhere except the
+  primary action, which is Tesla Blue `#3e6ae1`. The list used to carry three saturated colours for
+  *why* a site is badged; that is plain text now, so identity is never colour-alone. The ratios
+  agree with the convention, which is what settles how the blue may be used: `#3e6ae1` on the panel
+  is **3.9:1** — fine for a focus ring, short of the 4.5:1 text needs — while white *on* the blue is
+  **4.8:1**. So the accent is only ever a fill or a ring, and there are no blue links in the file.
+- **No webfont.** Tesla ships Universal Sans across car, app and site, and it is proprietary. Rather
+  than pay a round trip on the critical path for a lookalike, this uses Tesla's own declared
+  fallback stack and takes the resemblance from weight and spacing instead — 500 where a dashboard
+  would reach for 600, and considerably more air.
+- **`All` is a state, not a shortcut.** Every region ticked and no filter at all select the same
+  badges, but they should not *look* alike. Lighting all five chips on load made the selected style
+  carry no information; `All` is the resting state now, and region chips only light up once a real
+  subset is chosen.
+
+The panel is a sibling of the map container, never a child and never a Leaflet control. That is
+load-bearing: the wheel handler below is bound to `map.getContainer()`, so a wheel over a sibling
+bubbles to `<body>` and cannot reach the map. Everything the app frames — the initial fit, a badge,
+a single Supercharger — is framed with `paddingTopLeft` for the panel's width, so a selected site
+never lands underneath it.
+
 <div align="center">
-<img src="docs/screenshot-detail.png" alt="The Great Barrier Reef badge lighting all nine of its Queensland Superchargers" width="88%">
+<img src="docs/screenshot-detail.png" alt="The Great Barrier Reef detail card, listing all nine of its Queensland Superchargers, with every one lit on the map" width="88%">
 </div>
 
 ### Speed
@@ -153,10 +182,12 @@ Not tried and rejected: `zoomAnimation: false`. It would route every notch throu
 which fires `viewprereset`, which `GridLayer` binds to `_invalidateAll` — **one wheel notch would
 delete every tile and rebuild the grid.**
 
-Two changes were tried, measured, and reverted rather than shipped: continuous zoom (`zoomSnap: 0`)
-made a wheel notch move a fifth of a level instead of a whole one, and — since these are raster
-tiles — left the basemap a scaled bitmap whenever it sat between levels; and a larger `keepBuffer`
-changed nothing, because it governs which loaded tiles are *retained*, not which are fetched ahead.
+Two things measured and *not* shipped. `zoomSnap: 0` was the first attempt, and it looked like it
+failed on its own merits — six notches moved the zoom a fifth of a level. **That diagnosis was
+wrong**: the input was being dropped by `setView`, exactly as above, and the step size was never the
+problem. It stays at `1` anyway, because whole-level snapping is what keeps every *other* view call
+landing on a crisp raster level. Separately, a larger `keepBuffer` changed nothing — it governs
+which loaded tiles are *retained*, not which are fetched ahead.
 
 ---
 
@@ -197,6 +228,8 @@ Victoria Harbour
 | [`data/iconic-badges.json`](data/iconic-badges.json) | Machine-readable: `badges[]` and `sites[]`. |
 | [`scripts/build_iconic.py`](scripts/build_iconic.py) | Generates all three from one `BADGES` list. |
 | [`scripts/bench.mjs`](scripts/bench.mjs) | Frame times, tile counts and load cost, under throttling. |
+| [`scripts/verify.mjs`](scripts/verify.mjs) | Drives the UI over CDP — search, filters, detail card, Near me, a11y, layout. |
+| [`scripts/shots.mjs`](scripts/shots.mjs) | Regenerates the two screenshots above. |
 
 ### Regenerating
 
@@ -222,7 +255,7 @@ resolved here by proximity, because Tesla doesn't publish them. Every mapping ca
 - **`exact`** (26 badges) — the badge name matches the Supercharger's name, or only one live
   Supercharger exists at the landmark.
 - **`approx`** (14 badges) — several plausible candidates nearby. Flagged in the JSON, labelled
-  `approx` in the sidebar, and footnoted in the Markdown list.
+  `approx` in the list and on the detail card, and footnoted in the Markdown list.
 
 To settle an `approx` one: tap the badge in the Tesla app and select a site to see its real address.
 
