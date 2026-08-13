@@ -9,6 +9,49 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#000000">
 <title>Tesla Iconic Charger badges — world map</title>
+<meta name="description" content="Explore an independent map and downloadable snapshot of 40 Tesla Iconic Charger badges across 53 Supercharger sites in 18 countries.">
+<meta name="author" content="Lakshman Turlapati">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+<link rel="canonical" href="https://iconicchargers.com/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Iconic Chargers">
+<meta property="og:title" content="Iconic Chargers — Tesla badge locations mapped">
+<meta property="og:description" content="An independent atlas and downloadable snapshot of 40 Iconic Charger badges across 53 Supercharger sites in 18 countries.">
+<meta property="og:url" content="https://iconicchargers.com/">
+<meta property="og:image" content="https://iconicchargers.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Iconic Chargers world atlas with 40 badges, 53 Superchargers and 18 countries">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Iconic Chargers — Tesla badge locations mapped">
+<meta name="twitter:description" content="An independent atlas and downloadable snapshot of 40 Iconic Charger badges across 53 Supercharger sites in 18 countries.">
+<meta name="twitter:image" content="https://iconicchargers.com/og.png">
+<meta name="twitter:image:alt" content="Iconic Chargers world atlas with 40 badges, 53 Superchargers and 18 countries">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://iconicchargers.com/#website",
+      "url": "https://iconicchargers.com/",
+      "name": "Iconic Chargers",
+      "description": "An independent atlas and downloadable snapshot of Tesla Charging Passport Iconic Charger badge locations.",
+      "author": { "@id": "https://iconicchargers.com/#lakshman-turlapati" },
+      "publisher": { "@id": "https://iconicchargers.com/#lakshman-turlapati" },
+      "inLanguage": "en"
+    },
+    {
+      "@type": "Person",
+      "@id": "https://iconicchargers.com/#lakshman-turlapati",
+      "name": "Lakshman Turlapati",
+      "url": "https://www.parzival.live/",
+      "sameAs": ["https://github.com/LakshmanTurlapati"]
+    }
+  ]
+}
+</script>
 
 <!-- Style, glyphs, sprites and vector tiles all come from this one origin. The
      requests use CORS, so the preconnect has to use the same credentials mode. -->
@@ -354,6 +397,20 @@
     color: var(--text-muted); font-size: 11px; line-height: 1.5;
   }
   .foot svg { fill: currentColor; vertical-align: -1px; }
+  .project-note { margin: 5px 0 0; }
+  .project-links {
+    display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 6px;
+  }
+  .project-links a {
+    color: var(--text-secondary); text-decoration: none;
+    text-underline-offset: 2px;
+  }
+  @media (hover: hover) {
+    .project-links a:hover { color: var(--text-primary); text-decoration: underline; }
+  }
+  .project-links a:focus-visible {
+    border-radius: 2px; outline: 2px solid var(--accent-ring); outline-offset: 2px;
+  }
 
   /* ------------------------------------------------------- detail card --- */
   .dhead { display: flex; justify-content: flex-end; padding: 12px 12px 0; }
@@ -565,6 +622,10 @@
     #clear { width: 40px; height: 40px; }
     .srow { min-height: 48px; padding: 12px 14px; }
     .item { padding: 13px 8px; }
+    .project-links { row-gap: 0; }
+    .project-links a {
+      display: inline-flex; align-items: center; min-width: 44px; min-height: 44px;
+    }
     /* Repeats the base rule's three-selector list because that list is what
        out-specifies the vendor stylesheet; a shorter selector would lose. */
     .maplibregl-ctrl-group button,
@@ -768,7 +829,7 @@
 </head>
 <body>
 
-<div id="map" aria-label="Interactive map of Iconic Chargers"></div>
+<div id="map" role="region" aria-label="Interactive map of Iconic Chargers"></div>
 <div id="map-error" role="alert" hidden>
   <strong id="map-error-title">Map unavailable</strong>
   <span id="map-error-message">The charger list and details still work.</span>
@@ -826,11 +887,22 @@
   <!-- The legend went with the colour key, but this distinction did not:
        Tesla's own map shows stalls FREE RIGHT NOW in the same visual
        language, and there is no live feed here. -->
-  <p class="foot">
-    <svg width="7" height="10" viewBox="0 0 9 13" aria-hidden="true">
-      <path d="M5.6 0 0 7.4h3.4L2.3 13 9 5.2H5.1z"/></svg>
-    <span id="footnote">is total stalls, not live availability.</span>
-  </p>
+  <footer class="foot">
+    <div>
+      <svg width="7" height="10" viewBox="0 0 9 13" aria-hidden="true">
+        <path d="M5.6 0 0 7.4h3.4L2.3 13 9 5.2H5.1z"/></svg>
+      <span id="footnote">is total stalls, not live availability.</span>
+    </div>
+    <p class="project-note" id="project-note">Independent atlas · public snapshot · not affiliated with Tesla.</p>
+    <nav class="project-links" id="project-links" aria-label="Project information">
+      <a data-site-route="about" data-ui="navAbout" href="https://iconicchargers.com/about/">About</a>
+      <a data-site-route="badges" data-ui="navBadges" href="https://iconicchargers.com/badges/">Badges</a>
+      <a data-site-route="locations" data-ui="navLocations" href="https://iconicchargers.com/locations/">Locations</a>
+      <a data-site-route="data" data-ui="navData" href="https://iconicchargers.com/data/">Data &amp; citation</a>
+      <a data-ui="navGithub" href="https://github.com/LakshmanTurlapati/Iconic-Chargers">GitHub</a>
+      <a data-ui="navTeslaDocs" href="https://www.tesla.com/support/tesla-app/charging-badges">Tesla documentation</a>
+    </nav>
+  </footer>
 </div>
 
 <aside id="detail" hidden aria-label="Supercharger details">
@@ -875,6 +947,10 @@ document.addEventListener("DOMContentLoaded", function () {
   var LOCALE_KEY = "iconic.locale.v1";
   var COUNTRY_KEY = "iconic.country.v1";
   var COUNTRY_TTL = 6 * 60 * 60 * 1000;
+  // Generated production entry points define this value before the app loads.
+  // Its presence distinguishes a stable locale URL from direct-file and legacy
+  // /web/index.html use, both of which retain automatic browser/IP selection.
+  var staticSite = Object.prototype.hasOwnProperty.call(window, "ICONIC_PATH_LOCALE");
 
   function storageGet(kind, key) {
     try {
@@ -896,8 +972,14 @@ document.addEventListener("DOMContentLoaded", function () {
   var browserLocales = I18N.supportedFromTags(browserTags);
   var browserLocale = browserLocales[0] || I18N.defaultLocale;
   var savedLocale = storageGet("localStorage", LOCALE_KEY);
-  var localeOverride = Object.prototype.hasOwnProperty.call(LOCALES, savedLocale) ? savedLocale : null;
-  if (savedLocale && !localeOverride) storageSet("localStorage", LOCALE_KEY, null);
+  var pathLocale = staticSite && Object.prototype.hasOwnProperty.call(
+    LOCALES, window.ICONIC_PATH_LOCALE) ? window.ICONIC_PATH_LOCALE : null;
+  var localeOverride = pathLocale ||
+    (Object.prototype.hasOwnProperty.call(LOCALES, savedLocale) ? savedLocale : null);
+  var routeLocale = pathLocale;
+  if (savedLocale && !Object.prototype.hasOwnProperty.call(LOCALES, savedLocale)) {
+    storageSet("localStorage", LOCALE_KEY, null);
+  }
 
   function localeForCountry(country) {
     return I18N.localeForCountry(country, browserLocales, browserLocale);
@@ -1036,10 +1118,10 @@ document.addEventListener("DOMContentLoaded", function () {
     return { pitch: 50 * smooth };
   }
 
-  // The zoom that would land a site in full 50-degree pitch: automaticPitch
-  // ramps across one level above its 1,000m cutoff. Product zoom is currently
-  // capped at 14, so camera framing clamps this target to a flat close-up while
-  // preserving the altitude-driven calculation for a future higher zoom cap.
+  // The zoom that lands a site in full 50-degree pitch: automaticPitch ramps
+  // across one level above its 1,000m cutoff. The z19 product ceiling leaves
+  // room for that close-up and for MapLibre to overzoom OpenFreeMap's z14
+  // source tiles while keeping the camera bounded.
   //
   // Deliberately a flat 1000 rather than the site's own elevation_m:
   // automaticPitch reads next.elevation, which is *terrain* elevation and is 0
@@ -1052,7 +1134,7 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   var overviewMinZoom = -2;
-  var overviewMaxZoom = 14;
+  var overviewMaxZoom = 19;
   var constrainedMaxZoom = overviewMaxZoom;
   var MAX_CAMERA_LAT = 89.9;
   function mercatorY(latitude) {
@@ -1099,7 +1181,7 @@ document.addEventListener("DOMContentLoaded", function () {
       if (maplibregl.setRTLTextPlugin && maplibregl.getRTLTextPluginStatus &&
           maplibregl.getRTLTextPluginStatus() === "unavailable") {
         maplibregl.setRTLTextPlugin(
-          new URL("vendor/mapbox-gl-rtl-text.js", location.href).href, true
+          new URL("vendor/mapbox-gl-rtl-text.js", document.baseURI).href, true
         ).catch(function () {});
       }
       map = new maplibregl.Map({
@@ -1215,6 +1297,17 @@ document.addEventListener("DOMContentLoaded", function () {
               bottom: GUTTER,
               left: detailEl.getBoundingClientRect().right + GUTTER });
     }
+  }
+
+  function activeFramePad() {
+    return detailEl.hidden ? overviewPad() : framePad();
+  }
+
+  function padCenter(pad) {
+    return {
+      x: (pad.left + window.innerWidth - pad.right) / 2,
+      y: (pad.top + window.innerHeight - pad.bottom) / 2
+    };
   }
 
   function boundsForSites(sites) {
@@ -2038,7 +2131,14 @@ document.addEventListener("DOMContentLoaded", function () {
     detailEl.style.removeProperty("--h");
     detailEl.style.removeProperty("--y");
     detailEl.classList.remove("is-dragging", "no-anim");
-    if (refocus && selected && rowEl[selected]) rowEl[selected].focus();
+    if (refocus) {
+      var row = selected && rowEl[selected];
+      if (row && !row.hidden && row.getClientRects().length) {
+        row.focus({ preventScroll: true });
+      } else {
+        qEl.focus({ preventScroll: true });
+      }
+    }
     // The list is what the URL describes again; the pin stays highlighted so
     // it is still obvious where you were.
     try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
@@ -2564,12 +2664,17 @@ document.addEventListener("DOMContentLoaded", function () {
   }
 
   function syncLanguageOptions() {
-    var choice = localeOverride || "auto";
+    var choice = localeOverride || (staticSite ? I18N.defaultLocale : "auto");
     languageEl.innerHTML = "";
-    var automatic = document.createElement("option");
-    automatic.value = "auto";
-    automatic.textContent = ui("automatic");
-    languageEl.appendChild(automatic);
+    // Published URLs are stable language documents: `/` is English/x-default
+    // and `/{locale}/` names every other language. Automatic negotiation is a
+    // direct-file convenience only, where there is no crawlable URL contract.
+    if (!staticSite) {
+      var automatic = document.createElement("option");
+      automatic.value = "auto";
+      automatic.textContent = ui("automatic");
+      languageEl.appendChild(automatic);
+    }
     I18N.order.forEach(function (key) {
       var option = document.createElement("option");
       option.value = key;
@@ -2579,6 +2684,19 @@ document.addEventListener("DOMContentLoaded", function () {
       languageEl.appendChild(option);
     });
     languageEl.value = choice;
+  }
+
+  function relabelProjectLinks() {
+    text(document.getElementById("project-note"), ui("projectNote"));
+    var projectLinks = document.getElementById("project-links");
+    projectLinks.setAttribute("aria-label", ui("projectNav"));
+    Array.prototype.forEach.call(projectLinks.querySelectorAll("[data-ui]"), function (link) {
+      text(link, ui(link.dataset.ui));
+    });
+    var localeRoot = localeKey === I18N.defaultLocale ? "/" : "/" + localeKey + "/";
+    Array.prototype.forEach.call(projectLinks.querySelectorAll("[data-site-route]"), function (link) {
+      link.href = "https://iconicchargers.com" + localeRoot + link.dataset.siteRoute + "/";
+    });
   }
 
   function relabelStatic() {
@@ -2605,6 +2723,7 @@ document.addEventListener("DOMContentLoaded", function () {
     document.getElementById("detail-grab").setAttribute("aria-label", ui("resizeDetails"));
     text(document.getElementById("language-label"), ui("languageLabel"));
     languageEl.setAttribute("aria-label", ui("languageLabel"));
+    relabelProjectLinks();
   }
 
   function detailFocusToken() {
@@ -2631,6 +2750,8 @@ document.addEventListener("DOMContentLoaded", function () {
     var detailScroll = dBody.scrollTop;
     var focusToken = detailFocusToken();
     var directionChanged = locale.dir !== LOCALES[nextLocale].dir;
+    var previousPad = started && map ? activeFramePad() : null;
+    var wasAtOverview = previousPad && map.getZoom() <= map.getMinZoom() + 0.001;
     localeKey = nextLocale;
     locale = LOCALES[localeKey];
     resetFormatters();
@@ -2646,7 +2767,13 @@ document.addEventListener("DOMContentLoaded", function () {
     if (selected && !detailEl.hidden) renderDetail(byName[selected], selectedSite || sitesOf[selected][0]);
     // A query can match only the old translation. Locale changes relabel the
     // results but must not silently discard the user's open selection/detail.
-    if (started) render(true);
+    if (started) {
+      render(true);
+      // Translated headings can wrap, changing both the peek detent and the
+      // usable part of the map. Re-resolve the active detent before restoring
+      // either scroll position or compensating the camera below.
+      sheetSync();
+    }
     listEl.scrollTop = listScroll;
     dBody.scrollTop = detailScroll;
     restoreDetailFocus(focusToken);
@@ -2656,8 +2783,94 @@ document.addEventListener("DOMContentLoaded", function () {
         syncControlCorner();
         map.resize();
       }
+      var overview = started ? syncOverviewFloor(false) : null;
+      if (wasAtOverview && overview) {
+        map.stop();
+        map.jumpTo(overview);
+      } else if (previousPad) {
+        var before = padCenter(previousPad);
+        var after = padCenter(activeFramePad());
+        var dx = before.x - after.x;
+        var dy = before.y - after.y;
+        if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+          // Keep the same geographic content in the usable viewport when a
+          // mirrored card or a remeasured sheet moves that viewport's centre.
+          map.stop();
+          map.panBy([dx, dy], { duration: 0 });
+        }
+      }
       localizeMapLabels();
       relabelMapControls();
+    }
+  }
+
+  function syncLocaleUrl(nextRouteLocale) {
+    if (!staticSite) return;
+    routeLocale = nextRouteLocale || null;
+    var path = routeLocale && routeLocale !== I18N.defaultLocale
+      ? "/" + encodeURIComponent(routeLocale) + "/"
+      : "/";
+    try {
+      history.replaceState(null, "", path + location.search + location.hash);
+    } catch (e) {}
+    var routeMeta = window.ICONIC_ROUTE_META && window.ICONIC_ROUTE_META[routeLocale || I18N.defaultLocale];
+    var canonical = routeMeta ? routeMeta.canonical : "https://iconicchargers.com" + path;
+    var canonicalLink = document.querySelector('link[rel="canonical"]');
+    var ogUrl = document.querySelector('meta[property="og:url"]');
+    if (canonicalLink) canonicalLink.href = canonical;
+    if (ogUrl) ogUrl.content = canonical;
+    if (!routeMeta) return;
+
+    document.title = routeMeta.title;
+    var metadata = [
+      ['meta[name="description"]', "content", routeMeta.description],
+      ['meta[property="og:title"]', "content", routeMeta.title],
+      ['meta[property="og:description"]', "content", routeMeta.description],
+      ['meta[property="og:image:alt"]', "content", routeMeta.description],
+      ['meta[property="og:locale"]', "content", routeMeta.ogLocale],
+      ['meta[name="twitter:title"]', "content", routeMeta.title],
+      ['meta[name="twitter:description"]', "content", routeMeta.description],
+      ['meta[name="twitter:image:alt"]', "content", routeMeta.description]
+    ];
+    metadata.forEach(function (entry) {
+      var element = document.querySelector(entry[0]);
+      if (element) element.setAttribute(entry[1], entry[2]);
+    });
+
+    var jsonLd = document.querySelector('script[type="application/ld+json"]');
+    if (jsonLd) {
+      jsonLd.textContent = JSON.stringify({
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Person",
+            "@id": "https://iconicchargers.com/#lakshman-turlapati",
+            "name": "Lakshman Turlapati",
+            "url": "https://www.parzival.live/",
+            "sameAs": ["https://github.com/LakshmanTurlapati"]
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://iconicchargers.com/#website",
+            "name": "Iconic Chargers",
+            "url": "https://iconicchargers.com/",
+            "inLanguage": I18N.order.slice(),
+            "description": window.ICONIC_ROUTE_META.en.description,
+            "creator": { "@id": "https://iconicchargers.com/#lakshman-turlapati" },
+            "publisher": { "@id": "https://iconicchargers.com/#lakshman-turlapati" }
+          },
+          {
+            "@type": "WebPage",
+            "@id": canonical + "#webpage",
+            "name": routeMeta.title,
+            "url": canonical,
+            "inLanguage": routeLocale || I18N.defaultLocale,
+            "description": routeMeta.description,
+            "isPartOf": { "@id": "https://iconicchargers.com/#website" },
+            "author": { "@id": "https://iconicchargers.com/#lakshman-turlapati" }
+          }
+        ]
+      });
     }
   }
 
@@ -2703,7 +2916,14 @@ document.addEventListener("DOMContentLoaded", function () {
   languageEl.addEventListener("change", function () {
     var choice = languageEl.value;
     if (choice === "auto") {
+      if (staticSite) {
+        localeOverride = I18N.defaultLocale;
+        syncLocaleUrl(I18N.defaultLocale);
+        applyLocale(I18N.defaultLocale);
+        return;
+      }
       localeOverride = null;
+      syncLocaleUrl(null);
       storageSet("localStorage", LOCALE_KEY, null);
       ipCountry = cachedCountry();
       MILES = ipCountry ? ipCountry === "US" : /^en-US\b/i.test(navigator.language || "");
@@ -2714,6 +2934,7 @@ document.addEventListener("DOMContentLoaded", function () {
     if (!Object.prototype.hasOwnProperty.call(LOCALES, choice)) return;
     stopCountryLookup();
     localeOverride = choice;
+    syncLocaleUrl(choice);
     storageSet("localStorage", LOCALE_KEY, choice);
     applyLocale(choice);
   });

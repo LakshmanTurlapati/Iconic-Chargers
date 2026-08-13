@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this snapshot, please cite it using the metadata below."
+type: dataset
+title: "Iconic Chargers: Tesla Iconic Charger Badges and Supercharger Sites"
+authors:
+  - family-names: Turlapati
+    given-names: Lakshman
+date-released: 2026-08-12
+version: "2026-08-12"
+url: "https://iconicchargers.com/data/"
+repository-code: "https://github.com/LakshmanTurlapati/Iconic-Chargers"
+abstract: >-
+  An independent snapshot of 40 Tesla Charging Passport Iconic Charger badges
+  and 53 mapped Supercharger sites worldwide. Badge-to-site uncertainty is
+  retained. The CC BY 4.0 license applies only to Lakshman Turlapati's original
+  mappings, selection, and editorial text; see DATA-RIGHTS.md for exclusions.
+keywords:
+  - Tesla Charging Passport
+  - Iconic Chargers
+  - Supercharger
+  - electric vehicle charging
+  - geospatial dataset
+preferred-citation:
+  type: dataset
+  title: "Iconic Chargers: Tesla Iconic Charger Badges and Supercharger Sites"
+  authors:
+    - family-names: Turlapati
+      given-names: Lakshman
+  date-released: 2026-08-12
+  version: "2026-08-12"
+  url: "https://iconicchargers.com/data/"

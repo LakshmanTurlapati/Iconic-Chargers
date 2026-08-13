@@ -66,7 +66,8 @@ const invariantUi = new Set([
   // Product/brand terms and punctuation-only interpolation shells may be
   // identical even when all surrounding language is translated.
   "heading", "summaryAll", "summaryDated", "regionCount", "markerAria",
-  "superchargersHeading", "factSupercharger", "actionTesla"
+  "superchargersHeading", "factSupercharger", "actionTesla", "navGithub",
+  "navBadges"
 ]);
 for (const key of expectedLocales) {
   const catalog = i18n.locales[key];

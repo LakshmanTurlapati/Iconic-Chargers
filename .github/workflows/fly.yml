@@ -1,0 +1,205 @@
+name: Verify and deploy to Fly.io
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iconic-chargers-production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Generate and verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CHROME_BIN: /usr/bin/google-chrome
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Generate deterministic site
+        run: node scripts/build_site.mjs
+
+      - name: Verify generated pages and localization
+        run: |
+          node scripts/verify_site_output.mjs
+          node scripts/verify_i18n.mjs
+          INDEXNOW_DRY_RUN=1 node scripts/indexnow.mjs .site/sitemap.xml
+
+      - name: Verify generated map locale routing
+        run: |
+          python3 -m http.server 8732 --bind 127.0.0.1 --directory .site > /tmp/iconic-site-http.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8732/ >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              cat /tmp/iconic-site-http.log
+              exit 1
+            fi
+            sleep 1
+          done
+          node scripts/verify_site_browser.mjs http://127.0.0.1:8732/
+
+      - name: Run functional and direct-file suite
+        run: |
+          python3 -m http.server 8731 --bind 127.0.0.1 --directory . > /tmp/iconic-http.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          node scripts/verify.mjs http://127.0.0.1:8731/web/index.html
+
+      - name: Run throttled interaction benchmark
+        run: |
+          python3 -m http.server 8731 --bind 127.0.0.1 --directory .site > /tmp/iconic-http.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          node scripts/bench.mjs http://127.0.0.1:8731/ --cpu=6
+
+      - name: Build and smoke-test production image
+        run: |
+          docker build --tag iconic-chargers:test .
+          docker run --detach --name iconic-chargers-test --publish 8080:8080 iconic-chargers:test
+          trap 'docker rm --force iconic-chargers-test >/dev/null 2>&1 || true' EXIT
+
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 20 ]; then
+              docker logs iconic-chargers-test
+              exit 1
+            fi
+            sleep 1
+          done
+
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --header 'Host: iconicchargers.com' http://127.0.0.1:8080/)" = 200
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --header 'Host: iconicchargers.com' http://127.0.0.1:8080/not-a-real-page/)" = 404
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --header 'Host: www.iconicchargers.com' http://127.0.0.1:8080/fr/locations/)" = 308
+          test "$(curl --silent --head --header 'Host: iconicchargers.com' \
+            http://127.0.0.1:8080/index.html | tr -d '\r' | \
+            awk 'tolower($1) == "location:" { print $2 }')" = https://iconicchargers.com/
+          test "$(curl --silent --head --header 'Host: iconic-chargers.fly.dev' \
+            http://127.0.0.1:8080/web/index.html | tr -d '\r' | \
+            awk 'tolower($1) == "location:" { print $2 }')" = https://iconicchargers.com/
+          encoded_headers="$(curl --path-as-is --silent --head \
+            --header 'Host: iconic-chargers.fly.dev' \
+            'http://127.0.0.1:8080/x%0d%0aX-Audit:%20injected' | tr -d '\r')"
+          test "$(printf '%s\n' "$encoded_headers" | \
+            awk 'tolower($1) == "location:" { print $2 }')" = \
+            'https://iconicchargers.com/x%0d%0aX-Audit:%20injected'
+          if printf '%s\n' "$encoded_headers" | grep --ignore-case --quiet '^x-audit:'; then
+            echo "Encoded path injected an HTTP response header" >&2
+            exit 1
+          fi
+          test "$(curl --path-as-is --silent --head \
+            --header 'Host: iconicchargers.com' \
+            'http://127.0.0.1:8080//evil.example/index.html' | tr -d '\r' | \
+            awk 'tolower($1) == "location:" { print $2 }')" != '//evil.example/'
+          test "$(curl --silent --head --header 'Host: iconicchargers.com' \
+            http://127.0.0.1:8080/about | tr -d '\r' | \
+            awk 'tolower($1) == "location:" { print $2 }')" = /about/
+          test "$(curl --silent --head --header 'Host: iconicchargers.com' \
+            http://127.0.0.1:8080/fr/locations | tr -d '\r' | \
+            awk 'tolower($1) == "location:" { print $2 }')" = /fr/locations/
+          test "$(curl --silent --head --header 'Host: iconicchargers.com' \
+            http://127.0.0.1:8080/fr/index.html | tr -d '\r' | \
+            awk 'tolower($1) == "location:" { print $2 }')" = /fr/
+          test "$(curl --silent --head --header 'Host: iconicchargers.com' \
+            http://127.0.0.1:8080/web/index.html | tr -d '\r' | \
+            awk 'tolower($1) == "location:" { print $2 }')" = \
+            https://iconicchargers.com/
+          test "$(curl --silent --head --header 'Host: iconicchargers.com' \
+            http://127.0.0.1:8080/locations/4272-los-angeles-ca-tesla-diner/index.html | tr -d '\r' | \
+            awk 'tolower($1) == "location:" { print $2 }')" = \
+            /locations/4272-los-angeles-ca-tesla-diner/
+          curl --silent --head --header 'Host: iconicchargers.com' \
+            http://127.0.0.1:8080/DATA-RIGHTS.md | tr -d '\r' | \
+            grep --ignore-case --quiet '^Content-Type: text/markdown'
+          curl --silent --head --header 'Host: iconicchargers.com' \
+            http://127.0.0.1:8080/sites.js | tr -d '\r' | \
+            grep --ignore-case --quiet '^Cache-Control: max-age=3600$'
+          curl --silent --head --header 'Host: iconicchargers.com' \
+            http://127.0.0.1:8080/not-a-real-page/ | tr -d '\r' | \
+            grep --ignore-case --quiet '^Cache-Control: no-store$'
+          curl --fail --silent --header 'Host: iconicchargers.com' \
+            http://127.0.0.1:8080/data/locations.json >/dev/null
+          curl --fail --silent --header 'Host: iconicchargers.com' \
+            http://127.0.0.1:8080/indexnow-key.txt | grep --quiet --fixed-strings \
+            "$(tr -d '\r\n' < deploy/indexnow-key.txt)"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: generated-site
+          path: .site
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: Deploy production
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: generated-site
+          path: .site
+      - name: Install pinned flyctl
+        run: |
+          curl --fail --silent --show-error --location \
+            --output /tmp/flyctl.tar.gz \
+            https://github.com/superfly/flyctl/releases/download/v0.4.82/flyctl_0.4.82_Linux_x86_64.tar.gz
+          echo '154d2f12bc267dee9bd4152702b436aef5889a350972631f636124175dd7117c  /tmp/flyctl.tar.gz' | \
+            sha256sum --check --strict
+          tar --extract --gzip --file /tmp/flyctl.tar.gz --directory /tmp flyctl
+          sudo install --mode 0755 /tmp/flyctl /usr/local/bin/flyctl
+          flyctl version
+
+      - name: Deploy one warm Machine
+        run: flyctl deploy --remote-only --ha=false --app iconic-chargers --config fly.toml
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Smoke-test deployed image
+        run: |
+          curl --fail --silent --show-error --retry 10 --retry-delay 3 --retry-all-errors \
+            https://iconic-chargers.fly.dev/healthz
+          test "$(curl --fail --silent --show-error --retry 10 --retry-delay 3 \
+            --retry-all-errors --output /dev/null --write-out '%{http_code} %{redirect_url}' \
+            https://iconic-chargers.fly.dev/)" = \
+            '308 https://iconicchargers.com/'
+          flyctl ssh console --app iconic-chargers --command \
+            'wget -qO- --header="Host: iconicchargers.com" http://127.0.0.1:8080/indexnow-key.txt' | \
+            grep --quiet --fixed-strings "$(tr -d '\r\n' < deploy/indexnow-key.txt)"
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Notify IndexNow
+        run: |
+          if curl --fail --silent --show-error \
+            https://iconicchargers.com/indexnow-key.txt | \
+            grep --quiet --fixed-strings "$(tr -d '\r\n' < deploy/indexnow-key.txt)"; then
+            node scripts/indexnow.mjs .site/sitemap.xml
+          else
+            echo "Canonical DNS is not serving this deployment yet; skipping IndexNow."
+          fi

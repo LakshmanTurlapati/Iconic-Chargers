@@ -5,9 +5,61 @@
 // Waits for the vector style and GL renderer to settle before capturing -- a
 // screenshot taken on DOMContentLoaded shows an empty map or half-placed labels.
 import { spawn } from "node:child_process";
+import { accessSync, constants, statSync } from "node:fs";
 import { writeFile, mkdir, rm } from "node:fs/promises";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 
-const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+function executablePath(candidate) {
+  if (!candidate) return null;
+  const expanded = candidate.startsWith("~/") ? join(homedir(), candidate.slice(2)) : candidate;
+  const paths = expanded.includes("/")
+    ? [expanded]
+    : (process.env.PATH || "").split(delimiter).filter(Boolean).map((dir) => join(dir, expanded));
+  for (const path of paths) {
+    try {
+      accessSync(path, constants.X_OK);
+      if (statSync(path).isFile()) return path;
+    } catch {}
+  }
+  return null;
+}
+
+function findChrome() {
+  const override = process.env.CHROME_BIN?.trim();
+  if (override) {
+    const resolved = executablePath(override);
+    if (resolved) return resolved;
+    throw new Error(`CHROME_BIN is not an executable file: ${override}`);
+  }
+
+  const platformCandidates = process.platform === "darwin"
+    ? [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        join(homedir(), "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        join(homedir(), "Applications/Chromium.app/Contents/MacOS/Chromium"),
+        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+        "google-chrome", "chromium",
+      ]
+    : [
+        "google-chrome-stable", "google-chrome", "chromium", "chromium-browser",
+        "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
+        "/usr/bin/chromium", "/usr/bin/chromium-browser",
+        "/usr/local/bin/google-chrome", "/usr/local/bin/chromium",
+        "/opt/google/chrome/chrome", "/snap/bin/chromium",
+      ];
+  for (const candidate of platformCandidates) {
+    const resolved = executablePath(candidate);
+    if (resolved) return resolved;
+  }
+  throw new Error(
+    `Chrome or Chromium was not found on ${process.platform}. ` +
+    "Install it or set CHROME_BIN to its executable path.",
+  );
+}
+
+const CHROME = findChrome();
 const args = process.argv.slice(2);
 const URL_ = args.find((arg) => !arg.startsWith("--")) ||
   "http://127.0.0.1:8731/web/index.html";
@@ -20,15 +72,25 @@ const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${PORT}
   `--user-data-dir=${PROFILE}`, "--window-size=1500,900", "--no-first-run",
   "--hide-scrollbars", "--disable-background-timer-throttling",
   "--disable-renderer-backgrounding", "about:blank"], { stdio: "ignore" });
+let chromeLaunchError;
+chrome.once("error", (error) => { chromeLaunchError = error; });
 
 let wsUrl;
 for (let i = 0; i < 100; i++) {
+  if (chromeLaunchError) break;
   try {
     const r = await fetch(`http://127.0.0.1:${PORT}/json/list`);
     const p = (await r.json()).filter((t) => t.type === "page");
     if (p[0]?.webSocketDebuggerUrl) { wsUrl = p[0].webSocketDebuggerUrl; break; }
   } catch {}
   await sleep(100);
+}
+if (!wsUrl) {
+  chrome.kill();
+  await rm(PROFILE, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  throw new Error(chromeLaunchError
+    ? `Could not launch Chrome at ${CHROME}: ${chromeLaunchError.message}`
+    : `Chrome at ${CHROME} did not expose a debuggable page on port ${PORT}`);
 }
 const ws = new WebSocket(wsUrl);
 await new Promise((r) => { ws.onopen = r; });
@@ -99,12 +161,9 @@ async function shot(hash, file, after) {
 await shot("", "docs/screenshot.png");
 await shot("#Great%20Barrier%20Reef", "docs/screenshot-detail.png");
 
-// The product ceiling is currently z14, while the extrusion pipeline begins at
-// z15. Lift only this documentation page's map instance, then use the real row
-// selection path so the reference image continues to exercise the same z15–18
-// pitch and building behavior without changing the shipped camera contract.
+// Use the real row-selection path under the shipped z19 ceiling so the
+// reference image exercises the same z15–18 pitch and building behavior.
 await shot("#Tesla%20Diner", "docs/screenshot-3d.png", `(() => {
-  __map.setMaxZoom(19);
   document.querySelector('.item[data-badge="Tesla Diner"]').click();
 })()`);
 

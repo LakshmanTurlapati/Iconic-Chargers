@@ -305,12 +305,12 @@ def main():
         "badge_count": len(badges),
         "site_count": len(sites),
         "coordinate_datum": "WGS84 (decimal degrees)",
-        "badge_source": "Tesla app > Charging > Badges (user-supplied, as of snapshot_date)",
+        "badge_source": f"Tesla app > Charging > Badges (user-supplied, as of {SNAPSHOT})",
         "site_source": "https://supercharge.info/service/supercharge/allSites",
         "notes": (
             "Iconic Chargers is a Tesla app feature: charging at one of these Superchargers "
             "earns a collectable badge. Tesla publishes the list only in-app, so the badge "
-            "names here were read from the app on snapshot_date. A badge can cover more than "
+            f"names here were read from the app on {SNAPSHOT}. A badge can cover more than "
             "one Supercharger. Sites marked confidence 'approx' are this project's best match "
             "for the badge and are not confirmed against the app."
         ),

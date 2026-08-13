@@ -10,9 +10,61 @@
 // globals just to be testable, so constructors are wrapped before any script
 // runs and the real instances are captured from outside the page.
 import { spawn } from "node:child_process";
+import { accessSync, constants, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 
-const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+function executablePath(candidate) {
+  if (!candidate) return null;
+  const expanded = candidate.startsWith("~/") ? join(homedir(), candidate.slice(2)) : candidate;
+  const paths = expanded.includes("/")
+    ? [expanded]
+    : (process.env.PATH || "").split(delimiter).filter(Boolean).map((dir) => join(dir, expanded));
+  for (const path of paths) {
+    try {
+      accessSync(path, constants.X_OK);
+      if (statSync(path).isFile()) return path;
+    } catch {}
+  }
+  return null;
+}
+
+function findChrome() {
+  const override = process.env.CHROME_BIN?.trim();
+  if (override) {
+    const resolved = executablePath(override);
+    if (resolved) return resolved;
+    throw new Error(`CHROME_BIN is not an executable file: ${override}`);
+  }
+
+  const platformCandidates = process.platform === "darwin"
+    ? [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        join(homedir(), "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        join(homedir(), "Applications/Chromium.app/Contents/MacOS/Chromium"),
+        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+        "google-chrome", "chromium",
+      ]
+    : [
+        "google-chrome-stable", "google-chrome", "chromium", "chromium-browser",
+        "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
+        "/usr/bin/chromium", "/usr/bin/chromium-browser",
+        "/usr/local/bin/google-chrome", "/usr/local/bin/chromium",
+        "/opt/google/chrome/chrome", "/snap/bin/chromium",
+      ];
+  for (const candidate of platformCandidates) {
+    const resolved = executablePath(candidate);
+    if (resolved) return resolved;
+  }
+  throw new Error(
+    `Chrome or Chromium was not found on ${process.platform}. ` +
+    "Install it or set CHROME_BIN to its executable path.",
+  );
+}
+
+const CHROME = findChrome();
 const URL_ = process.argv[2] || "http://127.0.0.1:8731/web/index.html";
 const FILE_URL = new URL("../web/index.html", import.meta.url).href;
 const freshURL = (tag) => {
@@ -39,15 +91,25 @@ const chrome = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${PORT}
   `--user-data-dir=${PROFILE}`, "--window-size=1500,900", "--no-first-run",
   "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
   "--disable-backgrounding-occluded-windows", "about:blank"], { stdio: "ignore" });
+let chromeLaunchError;
+chrome.once("error", (error) => { chromeLaunchError = error; });
 
 let wsUrl;
 for (let i = 0; i < 100; i++) {
+  if (chromeLaunchError) break;
   try {
     const r = await fetch(`http://127.0.0.1:${PORT}/json/list`);
     const p = (await r.json()).filter((t) => t.type === "page");
     if (p[0]?.webSocketDebuggerUrl) { wsUrl = p[0].webSocketDebuggerUrl; break; }
   } catch {}
   await sleep(100);
+}
+if (!wsUrl) {
+  chrome.kill();
+  await rm(PROFILE, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  throw new Error(chromeLaunchError
+    ? `Could not launch Chrome at ${CHROME}: ${chromeLaunchError.message}`
+    : `Chrome at ${CHROME} did not expose a debuggable page on port ${PORT}`);
 }
 const ws = new WebSocket(wsUrl);
 await new Promise((r) => { ws.onopen = r; });
@@ -301,10 +363,8 @@ out.markerAlignment = await ev(`({
   rotation: __markers.every(m => m.getRotationAlignment() === 'viewport')
 })`);
 
-// The shipped camera currently stops at z14. Temporarily lift only this test
-// instance so the dormant z15+ pipeline remains a live rendering regression,
-// including its pitch curve, building geometry and lighting contract.
-await ev(`__map.setMaxZoom(19), 1`);
+// Exercise the shipped z15+ pipeline, including its pitch curve, building
+// geometry and lighting contract, under the real z19 product ceiling.
 out.altitudePitch = await ev(`(() => {
   const sample = (center) => {
     const cutoff = __map.calculateCameraOptionsFromCameraLngLatAltRotation(center, 1000, 0, 0).zoom;
@@ -353,7 +413,6 @@ Object.assign(out.urban3D, {
 });
 
 await load("#Tesla%20Diner");
-await ev(`__map.setMaxZoom(19), 1`);
 await click('.item[data-badge="Tesla Diner"]');
 const selectionReady = await ev(`new Promise(resolve => {
   let checks = 0;
@@ -557,10 +616,14 @@ out.detailFromRow = {
     const under = ${behind};
     const d = document.getElementById('detail').getBoundingClientRect();
     const p = document.getElementById('panel').getBoundingClientRect();
-    const s = ICONIC.sites.find(x => x.badge === 'Tesla Diner');
-    const q = __map.project([s.longitude, s.latitude]);
-    return { x: Math.round(q.x), gap: [Math.round(d.right), Math.round(p.left)],
-             clear: !under(q) };
+    const marker = document.querySelector('.pin.is-selected');
+    const r = marker && marker.getBoundingClientRect();
+    const q = r && {x:r.left + r.width / 2, y:r.top + r.height / 2};
+    const onScreen = !!q && r.width > 0 && q.x >= 0 && q.x <= innerWidth &&
+      q.y >= 0 && q.y <= innerHeight;
+    return { x: q ? Math.round(q.x) : null,
+             gap: [Math.round(d.right), Math.round(p.left)],
+             onScreen:onScreen, clear:onScreen && !under(q) };
   })()`)
 };
 
@@ -1422,10 +1485,18 @@ const sameTranslatedSwitchCamera = translatedSwitchAfter.camera.center.every((va
   Math.abs(value - translatedSwitchBefore.camera.center[index]) < 1e-7) &&
   ["zoom", "bearing", "pitch"].every((key) =>
     Math.abs(translatedSwitchAfter.camera[key] - translatedSwitchBefore.camera[key]) < 1e-7);
+await click("#dclose");
+await frame2();
+const translatedCloseAfter = await ev(`({
+  focus:document.activeElement.id,
+  detailHidden:document.getElementById('detail').hidden,
+  rowHidden:document.querySelector('.item[data-badge="Bryce Canyon"]').hidden
+})`);
 out.i18n.translatedQuerySwitch = {
   frenchMatches: frenchTranslatedMatches,
   before: translatedSwitchBefore,
   after: translatedSwitchAfter,
+  afterClose: translatedCloseAfter,
   queryPreserved: translatedSwitchAfter.query === translatedSwitchBefore.query,
   filterPreserved: JSON.stringify(translatedSwitchAfter.filters) ===
     JSON.stringify(translatedSwitchBefore.filters),
@@ -1436,7 +1507,9 @@ out.i18n.translatedQuerySwitch = {
     translatedSwitchAfter.detailTitle === translatedSwitchBefore.detailTitle,
   hashPreserved: translatedSwitchAfter.hash === translatedSwitchBefore.hash,
   focusPreserved: translatedSwitchAfter.focus === translatedSwitchBefore.focus,
-  oldTranslationHidden: translatedSwitchAfter.rowHidden && translatedSwitchAfter.visible.length === 0
+  oldTranslationHidden: translatedSwitchAfter.rowHidden && translatedSwitchAfter.visible.length === 0,
+  closeFocusFallback: translatedCloseAfter.detailHidden && translatedCloseAfter.rowHidden &&
+    translatedCloseAfter.focus === 'q'
 };
 
 // English source copy remains indexed alongside the active catalog. In an
@@ -1592,6 +1665,89 @@ out.i18n.hashSelectionInvalidation = {
   invalidRemovedStaleState: !afterInvalidHash.detailOpen &&
     afterInvalidHash.ariaCurrent === 0 && afterInvalidHash.selectedPins === 0
 };
+
+// Locale changes can move the usable viewport even though the map container
+// itself stays full-bleed. Verify the camera follows both a mirrored desktop
+// panel and a mirrored landscape detail card using the rendered markers --
+// canonical longitudes are not reliable once MapLibre wraps the world.
+await send("Emulation.setDeviceMetricsOverride",
+  { width: innerW, height: innerH, deviceScaleFactor: DPR, mobile: false });
+await ev(`localStorage.setItem('iconic.locale.v1','en'); sessionStorage.clear()`);
+await load("", freshURL("i18n-rtl-overview-reframe"));
+await ev(`(() => { const s=document.getElementById('language'); s.value='he';
+  s.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+await frame2();
+out.i18n.localeGeometry = {
+  overview: await ev(`(() => {
+    const panel = document.getElementById('panel').getBoundingClientRect();
+    const points = [...document.querySelectorAll('.pin')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return {x:r.left + r.width / 2, y:r.top + r.height / 2};
+    });
+    const onScreen = points.filter((q) => q.x >= 0 && q.x <= innerWidth &&
+      q.y >= 0 && q.y <= innerHeight).length;
+    const behindPanel = points.filter((q) => q.x >= panel.left && q.x <= panel.right &&
+      q.y >= panel.top && q.y <= panel.bottom).length;
+    return {lang:document.documentElement.lang, dir:document.documentElement.dir,
+      markers:points.length, onScreen:onScreen, behindPanel:behindPanel,
+      atFloor:Math.abs(__map.getZoom() - __map.getMinZoom()) < 1e-6};
+  })()`)
+};
+
+await send("Emulation.setDeviceMetricsOverride",
+  { width: 740, height: 390, deviceScaleFactor: 2, mobile: true });
+await ev(`localStorage.setItem('iconic.locale.v1','en'); sessionStorage.clear()`);
+await load("#Tesla%20Diner", freshURL("i18n-rtl-landscape-reframe"));
+for (let i = 0; i < 30; i++) {
+  if (await ev(`!__map.isMoving()`)) break;
+  await sleep(100);
+}
+const landscapeLocaleBefore = await ev(`({zoom:__map.getZoom(), hash:location.hash,
+  title:document.getElementById('d-title').textContent})`);
+await ev(`(() => { const s=document.getElementById('language'); s.value='he';
+  s.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+await frame2();
+out.i18n.localeGeometry.landscapeSelection = await ev(`(() => {
+  const marker = document.querySelector('.pin.is-selected');
+  const r = marker && marker.getBoundingClientRect();
+  const detail = document.getElementById('detail').getBoundingClientRect();
+  const q = r && {x:r.left + r.width / 2, y:r.top + r.height / 2};
+  const onScreen = !!q && r.width > 0 && q.x >= 0 && q.x <= innerWidth &&
+    q.y >= 0 && q.y <= innerHeight;
+  const clear = onScreen && !(q.x >= detail.left && q.x <= detail.right &&
+    q.y >= detail.top && q.y <= detail.bottom);
+  return {lang:document.documentElement.lang, dir:document.documentElement.dir,
+    onScreen:onScreen, clear:clear, zoom:__map.getZoom(), hash:location.hash,
+    title:document.getElementById('d-title').textContent,
+    selected:document.querySelectorAll('.pin.is-selected').length};
+})()`);
+out.i18n.localeGeometry.landscapeSelection.statePreserved =
+  Math.abs(out.i18n.localeGeometry.landscapeSelection.zoom - landscapeLocaleBefore.zoom) < 1e-6 &&
+  out.i18n.localeGeometry.landscapeSelection.hash === landscapeLocaleBefore.hash &&
+  out.i18n.localeGeometry.landscapeSelection.title === landscapeLocaleBefore.title &&
+  out.i18n.localeGeometry.landscapeSelection.selected === 1;
+
+// A translated header can be taller than the one that established the current
+// peek detent. The active sheet must be remeasured in place so its search field
+// remains inside the card rather than being clipped by overflow:hidden.
+await send("Emulation.setDeviceMetricsOverride",
+  { width: 375, height: 667, deviceScaleFactor: 2, mobile: true });
+await ev(`localStorage.setItem('iconic.locale.v1','en'); sessionStorage.clear()`);
+await load("", freshURL("i18n-sheet-detent-relabel"));
+await click("#panel-grab"); await sleep(350); // half -> full
+await click("#panel-grab"); await sleep(350); // full -> peek
+const sheetLocaleBefore = await ev(`document.getElementById('panel').getBoundingClientRect().height`);
+await ev(`(() => { const s=document.getElementById('language'); s.value='ja';
+  s.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+await frame2();
+out.i18n.localeGeometry.sheetDetent = await ev(`(() => {
+  const panel = document.getElementById('panel').getBoundingClientRect();
+  const search = document.querySelector('.search').getBoundingClientRect();
+  return {lang:document.documentElement.lang, height:panel.height,
+    grew:panel.height > ${sheetLocaleBefore} + 1,
+    searchInside:search.top >= panel.top - 1 && search.bottom <= panel.bottom + 1,
+    atPeek:document.getElementById('panel-grab').getAttribute('aria-expanded') === 'false'};
+})()`);
 
 // Exercise the RTL control/card mirroring at both responsive breakpoints. The
 // desktop switch above verifies state preservation; these cases guard the CSS
@@ -1783,7 +1939,8 @@ const requirePrivateRequest = (request, label) => {
   "chips.afterAll.regionsQuiet", "detailFromRow.detailShown",
   "detailFromRow.listStillVisible", "detailFromRow.listStillScrollable",
   "detailFromRow.detailAtTopLeft.clearOfPanel", "detailFromRow.noPopupAnywhere",
-  "detailFromRow.siteClearOfCards.clear", "close.listShown", "close.detailHidden",
+  "detailFromRow.siteClearOfCards.onScreen", "detailFromRow.siteClearOfCards.clear",
+  "close.listShown", "close.detailHidden",
   "close.hashCleared", "escapeCloses.wasOpen", "escapeCloses.nowClosed",
   "detailFromPin.detailShown", "deepLink.detailShown", "deepLink.allNineClearOfCards",
   "deepLink.afterPickingSite4.clearOfCards", "filterAwaySelection.detailWasOpen",
@@ -1832,11 +1989,19 @@ const requirePrivateRequest = (request, label) => {
   "i18n.translatedQuerySwitch.hashPreserved",
   "i18n.translatedQuerySwitch.focusPreserved",
   "i18n.translatedQuerySwitch.oldTranslationHidden",
+  "i18n.translatedQuerySwitch.closeFocusFallback",
   "i18n.canonicalEnglishCountrySearch.exact",
   "i18n.prototypeSavedChoice.styleLoaded",
   "i18n.prototypeSavedChoice.consoleClean",
   "i18n.hashSelectionInvalidation.clearRemovedStaleState",
   "i18n.hashSelectionInvalidation.invalidRemovedStaleState",
+  "i18n.localeGeometry.overview.atFloor",
+  "i18n.localeGeometry.landscapeSelection.onScreen",
+  "i18n.localeGeometry.landscapeSelection.clear",
+  "i18n.localeGeometry.landscapeSelection.statePreserved",
+  "i18n.localeGeometry.sheetDetent.grew",
+  "i18n.localeGeometry.sheetDetent.searchInside",
+  "i18n.localeGeometry.sheetDetent.atPeek",
   "directFile.styleLoaded",
   "directFile.buildings3D", "directFile.errorHidden", "directFile.consoleClean",
   "offlineFallback.errorShown", "offlineFallback.detailOpens"
@@ -1850,7 +2015,7 @@ requireEqual("zoomBtnShape", "40px/40px r=50%");
 requireEqual("mapEngine.name", "MapLibre GL JS");
 requireEqual("mapEngine.version", "5.24.0");
 requireEqual("mapEngine.openFreeMapVectorSources", 1);
-requireEqual("mapEngine.maxZoom", 14);
+requireEqual("mapEngine.maxZoom", 19);
 requireEqual("buildings3D.type", "fill-extrusion");
 requireEqual("buildings3D.sourceLayer", "building");
 requireEqual("buildings3D.nextTextLabel", "highway_name_other");
@@ -2011,6 +2176,19 @@ requireEqual("i18n.translatedQuerySwitch.after.selectedPins", 1);
 requireEqual("i18n.translatedQuerySwitch.after.detailOpen", true);
 requireEqual("i18n.translatedQuerySwitch.after.detailTitle", "Bryce Canyon");
 requireEqual("i18n.translatedQuerySwitch.after.focus", "dclose");
+requireEqual("i18n.translatedQuerySwitch.afterClose.focus", "q");
+requireEqual("i18n.translatedQuerySwitch.afterClose.detailHidden", true);
+requireEqual("i18n.translatedQuerySwitch.afterClose.rowHidden", true);
+requireEqual("i18n.localeGeometry.overview.lang", "he");
+requireEqual("i18n.localeGeometry.overview.dir", "rtl");
+requireEqual("i18n.localeGeometry.overview.markers", 53);
+requireEqual("i18n.localeGeometry.overview.onScreen", 53);
+requireEqual("i18n.localeGeometry.overview.behindPanel", 0);
+requireEqual("i18n.localeGeometry.landscapeSelection.lang", "he");
+requireEqual("i18n.localeGeometry.landscapeSelection.dir", "rtl");
+requireEqual("i18n.localeGeometry.landscapeSelection.selected", 1);
+requireEqual("i18n.localeGeometry.landscapeSelection.title", "Tesla Diner");
+requireEqual("i18n.localeGeometry.sheetDetent.lang", "ja");
 requireEqual("i18n.canonicalEnglishCountrySearch.locale", "ar");
 requireEqual("i18n.canonicalEnglishCountrySearch.dir", "rtl");
 requireEqual("i18n.canonicalEnglishCountrySearch.query", "United States");
@@ -2169,14 +2347,14 @@ if (failures.length) {
 //   panelOnTheRight {right:16, left:1112, w:372} · detailHiddenAtRest true
 //   rowsBuilt 40 · markersOnMap 53 · initialFitClearOfCards.behindACard 0
 //   controlsReachable {zoom:true, attribution:true} on BOTH desktop and narrow
-//   mapEngine MapLibre 5.24.0 / one OpenFreeMap vector source / responsive min / max 14
+//   mapEngine MapLibre 5.24.0 / one OpenFreeMap vector source / responsive min / max 19
 //   initialOverview atFloor/zoomOutDisabled true, sitesWithinPadding 53
 //   programmaticZoomBounds both clamped and zoomInDisabled true
 //   buildings3D aboveBaseBuildings/belowRoadLabels true, nextTextLabel highway_name_other,
 //     minZoom 15 / color #787876 / height+base reveal 0 at z15 to source values at z16,
 //     opacity 1 / gradient false / viewport light [1.15,210,30], white, intensity .08
-//   the shipped ceiling remains z14; a test-only lift exercises altitudePitch
-//     0/25/50/0, live z15+ buildings and selection without changing product behavior
+//   the shipped z19 ceiling exercises altitudePitch 0/25/50/0, live z15+
+//     buildings and selection while z14 source tiles overzoom normally
 //   urban3D/selection3D ready true, render buildings at pitch 50
 //   pitchedMarker selected/clear/clickable true at pitch 50
 //   search.visibleRows 1 · searchMatchesSiteName ["Arches"] · noMatch.markers 0
@@ -2189,7 +2367,7 @@ if (failures.length) {
 //   deepLink.siteRows 9 · allNineClearOfCards true · site 4 repoints the facts
 //   filterAwaySelection: detailClosed true, staleAriaCurrent 0, selectedMarkers 0
 //   wheelOverPanel / wheelOverDetail: the card scrolls, map zoom unchanged
-//   minInputClamp: button/wheel cannot cross the floor; maxInputClamp adds pinch at z14
+//   minInputClamp: button/wheel cannot cross the floor; maxInputClamp adds pinch at z19
 //   wheelOverMap: gained about 3, fractionalRest true, continuity.distinct >> 3
 //   nearMe.promptedOnLoad 0 · granted.firstFour starts "Stonehenge" · ascending true
 //   nearMe.denied.msg mentions permission · achromaticPanel [] · blueUsage []

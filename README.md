@@ -2,17 +2,21 @@
 
 # ⚡ Iconic Chargers
 
-**Every Supercharger that earns an Iconic Charger badge in the Tesla app — mapped.**
+**An independent atlas of Tesla Charging Passport Iconic Charger badge locations.**
 
-Tesla's Charging Passport hands out a collectable badge for charging at certain Superchargers.
-Tesla only publishes that list *inside the app*. This is that list, with real coordinates.
+Tesla's Charging Passport awards collectible badges for charging at certain Superchargers. Iconic
+Chargers is Lakshman Turlapati's public, downloadable snapshot of those badges, the sites believed to
+earn them, and the evidence and confidence behind each mapping. It is not affiliated with Tesla and
+is not a live charger-availability service.
+
+**Canonical site: [iconicchargers.com](https://iconicchargers.com/)**
 
 <br>
 
 ![Badges](https://img.shields.io/badge/badges-40-3987e5?style=for-the-badge)
 ![Sites](https://img.shields.io/badge/superchargers-53-d95926?style=for-the-badge)
 ![Countries](https://img.shields.io/badge/countries-18-199e70?style=for-the-badge)
-![Build](https://img.shields.io/badge/build-none%20required-8a8a8a?style=for-the-badge)
+![Snapshot](https://img.shields.io/badge/snapshot-2026--08--12-8a8a8a?style=for-the-badge)
 
 <br>
 
@@ -23,6 +27,12 @@ Tesla only publishes that list *inside the app*. This is that list, with real co
 ---
 
 ## Open it
+
+Use the production atlas at **[https://iconicchargers.com/](https://iconicchargers.com/)**. Badge,
+location, methodology and download pages are server-rendered and crawlable; the homepage remains
+the full interactive map.
+
+The source map also still works directly from disk:
 
 ```sh
 git clone https://github.com/LakshmanTurlapati/Iconic-Chargers.git
@@ -62,6 +72,11 @@ Search is Unicode- and accent-insensitive and indexes both localized copy and th
 source, so either vocabulary continues to work. Map place labels request the selected
 OpenStreetMap-language field, falling back to the local name and then English when coverage is
 missing.
+
+On the canonical site, English uses `/` and each explicit locale uses `/{locale}/`. The URL locale
+wins over saved or browser language, and changing the selector replaces only that path while
+preserving the query, badge hash and live map state. Direct `file://` use retains the automatic
+selection flow above.
 
 Automatic mode calls only [`https://api.country.is/`](https://country.is/), with no credentials or referrer and a
 1.5-second abort timeout. Only a validated two-letter country code is retained, for six hours in
@@ -109,7 +124,7 @@ Whistler (2 each).
 |---|---|
 | ⚡ **Markers** | Tesla's own Supercharger marker shape — a capsule with a bolt and a count |
 | 🔢 **The number** | **total stalls**, not live availability — see the note below |
-| 🏙️ **3D pipeline** | altitude-driven pitch and OpenStreetMap extrusions remain available at z15+, while user zoom is capped at z14 |
+| 🏙️ **3D pipeline** | altitude-driven pitch and OpenStreetMap extrusions appear at z15+; the camera is capped at z19 |
 | 🧭 **Compass** | rotate the map, then tap the pitch-aware compass to return north |
 | 🔎 **Search** | badge name, Supercharger name, city, country, why it's badged, or anything in the write-up |
 | 🏷️ **Filter** | `All` plus the four regions, additive |
@@ -320,11 +335,12 @@ The cutoff target is computed from the same
 is no DEM attached. Feeding it anything else would aim past its own cutoff instead of at it.
 
 A map pin always names one Supercharger, while a multi-site badge can name up to nine spread over
-hundreds of kilometres. Both are framed within the same z14 ceiling.
+hundreds of kilometres. Both are framed within the same z19 camera ceiling.
 
-The user camera is capped at **z14**, matching OpenFreeMap's OpenMapTiles source maximum. The
-altitude transition and z15–16 building reveal remain regression-tested, but the product ceiling
-prevents users from overzooming past the available source detail.
+The user camera is capped at **z19**. OpenFreeMap's OpenMapTiles source currently ends at **z14**;
+those vector tiles continue to overzoom normally, so the source limit is not the camera limit. The
+extra range is what allows the altitude transition, 50° selection pitch and z15–16 building reveal
+to be used in the product.
 
 Buildings appear at z15 and rise smoothly to their full OpenStreetMap-derived `render_height` and
 `render_min_height` by z16, avoiding a hard 3D pop. Their opaque muted-gray material is subtly
@@ -411,13 +427,20 @@ Victoria Harbour
 | `web/sites.js` | Generated data for the map — don't hand-edit. |
 | [`web/locales.js`](web/locales.js) | One classic-script catalog containing all 18 locales for `file://` startup. |
 | `web/vendor/` | MapLibre GL JS 5.24.0 and the lazy RTL text plugin, with their licences. |
+| `web/og.png` | The 1200×630 social sharing card. |
 | [`ICONIC-CHARGERS.md`](ICONIC-CHARGERS.md) | Every badge, its Superchargers, coordinates. |
 | [`data/iconic-badges.json`](data/iconic-badges.json) | Machine-readable: `badges[]` and `sites[]`. |
 | [`scripts/build_iconic.py`](scripts/build_iconic.py) | Generates all three from one `BADGES` list. |
+| `scripts/build_site.mjs` | Deterministically generates the localized crawlable site and canonical feeds into `.site/`. |
+| `scripts/verify_site_output.mjs` | Cross-checks HTML, feeds, URLs, metadata, alternates and entity counts. |
+| [`scripts/verify_site_browser.mjs`](scripts/verify_site_browser.mjs) | Browser smoke test for generated locale paths, deep links, metadata and preserved map state. |
 | [`scripts/bench.mjs`](scripts/bench.mjs) | Frame times, tile counts and load cost, under throttling. |
 | [`scripts/verify.mjs`](scripts/verify.mjs) | CDP checks for product flows, all locales, IP/storage scenarios, RTL, responsive layout and `file://`. |
 | [`scripts/verify_i18n.mjs`](scripts/verify_i18n.mjs) | Static catalog, placeholder, plural, editorial-copy and resolver validation. |
 | [`scripts/shots.mjs`](scripts/shots.mjs) | Regenerates the deterministic English world, detail and phone screenshots. |
+| [`CITATION.cff`](CITATION.cff) | Citation metadata for the dated public snapshot. |
+| [`DATA-RIGHTS.md`](DATA-RIGHTS.md) | CC BY 4.0 scope and upstream-data exclusions. |
+| [`Dockerfile`](Dockerfile), [`fly.toml`](fly.toml) | Reproducible nginx image and Fly.io runtime configuration. |
 
 `node scripts/shots.mjs --i18n-qa` also writes wide and narrow review images for French, German,
 Arabic, Hebrew, Japanese, both Chinese scripts, Cantonese and Māori to `.context/i18n-qa/`.
@@ -435,6 +458,30 @@ python3 scripts/build_iconic.py
 The build **fails loudly** if any badge resolves to zero live Superchargers, printing the near-miss
 candidates and their status. That matters: `Dombås` is listed upstream as `EXPANDING` rather than
 `OPEN`, and a naive "open sites only" filter drops it without a word.
+
+### Generating and verifying the published site
+
+```sh
+node scripts/build_site.mjs
+node scripts/verify_site_output.mjs
+```
+
+Generation writes only to the ignored `.site/` directory. It produces the English map at `/`, one
+map entry point per explicit locale, localized badge and location directories, 720 badge pages, 954
+location pages, localized About and Data pages, four canonical English downloads, a sitemap with
+reciprocal language alternates, crawler policy, `llms.txt`, `llms-full.txt`, metadata and real 404
+content. English slugs and Supercharge.info site IDs remain stable across languages.
+
+The production image builds that directory in Node Alpine and serves it with nginx Alpine on port
+8080. [`fly.toml`](fly.toml) keeps one 256 MB shared-CPU Machine warm in `ord`; the GitHub Actions
+workflow runs the complete verification gate before deploying accepted changes to `main` and then
+submitting canonical URLs through IndexNow.
+
+`robots.txt` allows ordinary search and user-requested retrieval crawlers while blocking dedicated
+or general model-training crawlers. It contains only crawler policy and the absolute sitemap
+pointer; entity records live in HTML, the sitemap and downloads. `llms.txt` is a supplementary
+resource index, not a substitute for crawlable pages. These measures improve discovery and citation
+eligibility, but no search engine or language model is guaranteed to index or cite the project.
 
 ---
 
@@ -470,6 +517,27 @@ Coordinates, stall counts, elevations and status come from
 Cross-checked against OpenStreetMap nodes where the upstream data carries an `osmId`: **22 of 53
 sites verified, worst disagreement 65 m** (Gayrettepe, a multi-level city site). The remaining 31 have
 no usable OSM node — mostly newer and non-European sites.
+
+### Downloads, citation and rights
+
+The canonical English feeds are published at:
+
+- [`/data/iconic-badges.json`](https://iconicchargers.com/data/iconic-badges.json)
+- [`/data/locations.json`](https://iconicchargers.com/data/locations.json)
+- [`/data/locations.csv`](https://iconicchargers.com/data/locations.csv)
+- [`/data/locations.geojson`](https://iconicchargers.com/data/locations.geojson)
+
+Each location record carries its stable source ID and site facts plus the related badge's
+confidence, reason, description, notes, page URLs and snapshot date. The preferred citation is:
+
+> Turlapati, Lakshman. *Iconic Chargers: Tesla Iconic Charger Badges and Supercharger Sites.*
+> Snapshot 2026-08-12. https://iconicchargers.com/data/.
+
+Lakshman Turlapati's original mappings, selection and editorial text are available under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). That grant does **not** cover upstream
+Supercharge.info facts, Tesla names or trademarks, OpenStreetMap/OpenFreeMap basemap data, or other
+third-party material. See [`DATA-RIGHTS.md`](DATA-RIGHTS.md) and [`CITATION.cff`](CITATION.cff) for
+the precise scope and machine-readable citation details.
 
 ### Known gap
 

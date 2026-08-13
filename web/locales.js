@@ -66,7 +66,15 @@
       resetBearing: "Reset bearing to north",
       toggleAttribution: "Toggle attribution",
       siteData: "site data",
-      unknown: "unknown"
+      unknown: "unknown",
+      projectNote: "Independent atlas · public snapshot · not affiliated with Tesla.",
+      projectNav: "Project information",
+      navAbout: "About",
+      navBadges: "Badges",
+      navLocations: "Locations",
+      navData: "Data & citation",
+      navGithub: "GitHub",
+      navTeslaDocs: "Tesla documentation"
     },
     nouns: {
       badge: { one: "{count} badge", other: "{count} badges" },
@@ -222,7 +230,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resetBearing": "איפוס כיוון המפה לצפון",
       "toggleAttribution": "הצגה או הסתרה של פרטי הייחוס",
       "siteData": "נתוני האתר",
-      "unknown": "לא ידוע"
+      "unknown": "לא ידוע",
+      "projectNote": "אטלס עצמאי · תמונת מצב ציבורית · ללא זיקה ל-Tesla.",
+      "projectNav": "מידע על הפרויקט",
+      "navAbout": "אודות",
+      "navBadges": "תגים",
+      "navLocations": "מיקומים",
+      "navData": "נתונים וציטוט",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "התיעוד של Tesla"
     },
     "nouns": {
       "badge": {
@@ -505,7 +521,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resetBearing": "إعادة توجيه الخريطة نحو الشمال",
       "toggleAttribution": "إظهار بيانات النسب أو إخفاؤها",
       "siteData": "بيانات الموقع",
-      "unknown": "غير معروف"
+      "unknown": "غير معروف",
+      "projectNote": "أطلس مستقل · لقطة بيانات عامة · غير تابع لـ Tesla.",
+      "projectNav": "معلومات المشروع",
+      "navAbout": "حول المشروع",
+      "navBadges": "الشارات",
+      "navLocations": "المواقع",
+      "navData": "البيانات وطريقة الاستشهاد",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "وثائق Tesla"
     },
     "nouns": {
       "badge": {
@@ -797,7 +821,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resetBearing": "地図を北向きに戻す",
       "toggleAttribution": "帰属情報の表示を切り替える",
       "siteData": "サイトデータ",
-      "unknown": "不明"
+      "unknown": "不明",
+      "projectNote": "独立したアトラス · 公開スナップショット · Teslaとは提携していません。",
+      "projectNav": "プロジェクト情報",
+      "navAbout": "このサイトについて",
+      "navBadges": "バッジ",
+      "navLocations": "充電スポット",
+      "navData": "データと引用方法",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Teslaのドキュメント"
     },
     "nouns": {
       "badge": {
@@ -1074,7 +1106,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resetBearing": "지도를 북쪽 방향으로 재설정",
       "toggleAttribution": "저작자 표시 전환",
       "siteData": "사이트 데이터",
-      "unknown": "알 수 없음"
+      "unknown": "알 수 없음",
+      "projectNote": "독립 아틀라스 · 공개 데이터 스냅샷 · Tesla와 제휴 관계가 없습니다.",
+      "projectNav": "프로젝트 정보",
+      "navAbout": "소개",
+      "navBadges": "배지",
+      "navLocations": "충전소 위치",
+      "navData": "데이터 및 인용",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Tesla 문서"
     },
     "nouns": {
       "badge": {
@@ -1352,7 +1392,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resetBearing": "将地图重置为朝北",
       "toggleAttribution": "显示或隐藏版权信息",
       "siteData": "站点数据",
-      "unknown": "未知"
+      "unknown": "未知",
+      "projectNote": "独立图集 · 公开数据快照 · 与 Tesla 无关联。",
+      "projectNav": "项目信息",
+      "navAbout": "关于",
+      "navBadges": "徽章",
+      "navLocations": "充电站位置",
+      "navData": "数据与引用",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Tesla 文档"
     },
     "nouns": {
       "badge": {
@@ -1630,7 +1678,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resetBearing": "將地圖重設為朝北",
       "toggleAttribution": "顯示或隱藏版權資訊",
       "siteData": "站點資料",
-      "unknown": "未知"
+      "unknown": "未知",
+      "projectNote": "獨立圖集 · 公開資料快照 · 與 Tesla 無隸屬關係。",
+      "projectNav": "專案資訊",
+      "navAbout": "關於",
+      "navBadges": "徽章",
+      "navLocations": "充電站位置",
+      "navData": "資料與引用",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Tesla 文件"
     },
     "nouns": {
       "badge": {
@@ -1910,7 +1966,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resetBearing": "將地圖重設為向北",
       "toggleAttribution": "顯示或隱藏資料來源",
       "siteData": "站點資料",
-      "unknown": "未知"
+      "unknown": "未知",
+      "projectNote": "獨立圖集 · 公開資料快照 · 同 Tesla 冇關聯。",
+      "projectNav": "項目資訊",
+      "navAbout": "關於",
+      "navBadges": "徽章",
+      "navLocations": "充電站位置",
+      "navData": "資料同引用",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Tesla 文件"
     },
     "nouns": {
       "badge": {
@@ -2190,7 +2254,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resetBearing": "Tilbakestill retningen mot nord",
       "toggleAttribution": "Vis eller skjul kildeinformasjon",
       "siteData": "stedsdata",
-      "unknown": "Ukjent"
+      "unknown": "Ukjent",
+      "projectNote": "Uavhengig atlas · offentlig øyeblikksbilde · ikke tilknyttet Tesla.",
+      "projectNav": "Prosjektinformasjon",
+      "navAbout": "Om",
+      "navBadges": "Merker",
+      "navLocations": "Ladesteder",
+      "navData": "Data og kildehenvisning",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Tesla-dokumentasjon"
     },
     "nouns": {
       "badge": {
@@ -2471,7 +2543,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resetBearing": "Tilbakestill retninga mot nord",
       "toggleAttribution": "Vis eller gøym kjeldeinformasjon",
       "siteData": "staddata",
-      "unknown": "Ukjent"
+      "unknown": "Ukjent",
+      "projectNote": "Uavhengig atlas · offentleg augneblinksbilete · ikkje tilknytt Tesla.",
+      "projectNav": "Prosjektinformasjon",
+      "navAbout": "Om",
+      "navBadges": "Merke",
+      "navLocations": "Ladestader",
+      "navData": "Data og kjeldetilvising",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Tesla-dokumentasjon"
     },
     "nouns": {
       "badge": {
@@ -2751,7 +2831,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resetBearing": "Yönü kuzeye sıfırla",
       "toggleAttribution": "Kaynak bilgisini göster veya gizle",
       "siteData": "istasyon verileri",
-      "unknown": "Bilinmiyor"
+      "unknown": "Bilinmiyor",
+      "projectNote": "Bağımsız atlas · herkese açık veri anlık görüntüsü · Tesla ile bağlantılı değildir.",
+      "projectNav": "Proje bilgileri",
+      "navAbout": "Hakkında",
+      "navBadges": "Rozetler",
+      "navLocations": "Konumlar",
+      "navData": "Veriler ve atıf",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Tesla belgeleri"
     },
     "nouns": {
       "badge": {
@@ -3031,7 +3119,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resetBearing": "Nastavit orientaci na sever",
       "toggleAttribution": "Zobrazit nebo skrýt údaje o zdrojích",
       "siteData": "data o stanicích",
-      "unknown": "Neznámé"
+      "unknown": "Neznámé",
+      "projectNote": "Nezávislý atlas · veřejný snímek dat · není spojen se společností Tesla.",
+      "projectNav": "Informace o projektu",
+      "navAbout": "O projektu",
+      "navBadges": "Odznaky",
+      "navLocations": "Lokality",
+      "navData": "Data a citace",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Dokumentace společnosti Tesla"
     },
     "nouns": {
       "badge": {
@@ -3317,7 +3413,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resetBearing": "Whakahokia te aronga ki te raki",
       "toggleAttribution": "Whakaaturia, huna rānei ngā mōhiohio pūtake",
       "siteData": "raraunga wāhi",
-      "unknown": "Tē mōhiotia"
+      "unknown": "Tē mōhiotia",
+      "projectNote": "Mahere motuhake · hopukanga raraunga tūmatanui · kāore he hononga ki a Tesla.",
+      "projectNav": "Mōhiohio kaupapa",
+      "navAbout": "Mō te kaupapa",
+      "navBadges": "Ngā tohu",
+      "navLocations": "Ngā tauwāhi",
+      "navData": "Raraunga me te tohutoro",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Ngā tuhinga a Tesla"
     },
     "nouns": {
       "badge": {
@@ -3599,7 +3703,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resizeList": "Redimensionner la liste",
       "resizeDetails": "Redimensionner les détails",
       "siteData": "données du site",
-      "unknown": "Inconnu"
+      "unknown": "Inconnu",
+      "projectNote": "Atlas indépendant · instantané public · sans affiliation avec Tesla.",
+      "projectNav": "Informations sur le projet",
+      "navAbout": "À propos",
+      "navBadges": "Badges",
+      "navLocations": "Sites",
+      "navData": "Données et citation",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Documentation de Tesla"
     },
     "nouns": {
       "badge": {
@@ -3882,7 +3994,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resizeList": "Größe der Liste ändern",
       "resizeDetails": "Größe der Details ändern",
       "siteData": "Standortdaten",
-      "unknown": "Unbekannt"
+      "unknown": "Unbekannt",
+      "projectNote": "Unabhängiger Atlas · öffentliche Momentaufnahme · nicht mit Tesla verbunden.",
+      "projectNav": "Projektinformationen",
+      "navAbout": "Über das Projekt",
+      "navBadges": "Badges",
+      "navLocations": "Standorte",
+      "navData": "Daten und Zitation",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Tesla-Dokumentation"
     },
     "nouns": {
       "badge": {
@@ -4162,7 +4282,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resizeList": "Grootte van de lijst aanpassen",
       "resizeDetails": "Grootte van de details aanpassen",
       "siteData": "locatiegegevens",
-      "unknown": "Onbekend"
+      "unknown": "Onbekend",
+      "projectNote": "Onafhankelijke atlas · openbare momentopname · niet gelieerd aan Tesla.",
+      "projectNav": "Projectinformatie",
+      "navAbout": "Over",
+      "navBadges": "Badges",
+      "navLocations": "Locaties",
+      "navData": "Data en bronvermelding",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Tesla-documentatie"
     },
     "nouns": {
       "badge": {
@@ -4442,7 +4570,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resizeList": "Ridimensiona l’elenco",
       "resizeDetails": "Ridimensiona i dettagli",
       "siteData": "dati del sito",
-      "unknown": "Sconosciuto"
+      "unknown": "Sconosciuto",
+      "projectNote": "Atlante indipendente · istantanea pubblica · non affiliato a Tesla.",
+      "projectNav": "Informazioni sul progetto",
+      "navAbout": "Il progetto",
+      "navBadges": "Badge",
+      "navLocations": "Località",
+      "navData": "Dati e citazione",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Documentazione Tesla"
     },
     "nouns": {
       "badge": {
@@ -4725,7 +4861,15 @@ Object.assign(window.ICONIC_I18N.locales, {
       "resizeList": "Cambiar tamaño de la lista",
       "resizeDetails": "Cambiar tamaño de los detalles",
       "siteData": "datos del sitio",
-      "unknown": "Desconocido"
+      "unknown": "Desconocido",
+      "projectNote": "Atlas independiente · instantánea pública · sin afiliación con Tesla.",
+      "projectNav": "Información del proyecto",
+      "navAbout": "Acerca de",
+      "navBadges": "Insignias",
+      "navLocations": "Ubicaciones",
+      "navData": "Datos y cita",
+      "navGithub": "GitHub",
+      "navTeslaDocs": "Documentación de Tesla"
     },
     "nouns": {
       "badge": {

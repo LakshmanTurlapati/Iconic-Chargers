@@ -12,9 +12,61 @@
 // interaction already sits at the renderer's ceiling and the run reports no
 // jank whatever the code does. Throttling is what makes the numbers move.
 import { spawn } from "node:child_process";
+import { accessSync, constants, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 
-const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+function executablePath(candidate) {
+  if (!candidate) return null;
+  const expanded = candidate.startsWith("~/") ? join(homedir(), candidate.slice(2)) : candidate;
+  const paths = expanded.includes("/")
+    ? [expanded]
+    : (process.env.PATH || "").split(delimiter).filter(Boolean).map((dir) => join(dir, expanded));
+  for (const path of paths) {
+    try {
+      accessSync(path, constants.X_OK);
+      if (statSync(path).isFile()) return path;
+    } catch {}
+  }
+  return null;
+}
+
+function findChrome() {
+  const override = process.env.CHROME_BIN?.trim();
+  if (override) {
+    const resolved = executablePath(override);
+    if (resolved) return resolved;
+    throw new Error(`CHROME_BIN is not an executable file: ${override}`);
+  }
+
+  const platformCandidates = process.platform === "darwin"
+    ? [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        join(homedir(), "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        join(homedir(), "Applications/Chromium.app/Contents/MacOS/Chromium"),
+        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+        "google-chrome", "chromium",
+      ]
+    : [
+        "google-chrome-stable", "google-chrome", "chromium", "chromium-browser",
+        "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
+        "/usr/bin/chromium", "/usr/bin/chromium-browser",
+        "/usr/local/bin/google-chrome", "/usr/local/bin/chromium",
+        "/opt/google/chrome/chrome", "/snap/bin/chromium",
+      ];
+  for (const candidate of platformCandidates) {
+    const resolved = executablePath(candidate);
+    if (resolved) return resolved;
+  }
+  throw new Error(
+    `Chrome or Chromium was not found on ${process.platform}. ` +
+    "Install it or set CHROME_BIN to its executable path.",
+  );
+}
+
+const CHROME = findChrome();
 const args = process.argv.slice(2);
 const URL_ = args.find((a) => !a.startsWith("--")) ||
   "http://127.0.0.1:8731/web/index.html";
@@ -43,9 +95,12 @@ const chrome = spawn(CHROME, [
   "--disable-backgrounding-occluded-windows",
   "about:blank",
 ], { stdio: "ignore" });
+let chromeLaunchError;
+chrome.once("error", (error) => { chromeLaunchError = error; });
 
 async function target() {
   for (let i = 0; i < 100; i++) {
+    if (chromeLaunchError) break;
     try {
       const r = await fetch(`http://127.0.0.1:${PORT}/json/list`);
       const pages = (await r.json()).filter((t) => t.type === "page");
@@ -53,7 +108,11 @@ async function target() {
     } catch {}
     await sleep(100);
   }
-  throw new Error("Chrome did not expose a debuggable page");
+  chrome.kill();
+  await rm(PROFILE, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
+  throw new Error(chromeLaunchError
+    ? `Could not launch Chrome at ${CHROME}: ${chromeLaunchError.message}`
+    : `Chrome at ${CHROME} did not expose a debuggable page on port ${PORT}`);
 }
 
 const ws = new WebSocket(await target());
