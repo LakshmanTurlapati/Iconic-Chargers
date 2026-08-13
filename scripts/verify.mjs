@@ -18,6 +18,7 @@ const PORT = 9300 + (process.pid % 300);
 const PROFILE = `/tmp/ui-${process.pid}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const DPR = 2;
+const innerW = 1500, innerH = 900;   // must match setDeviceMetricsOverride below
 // Chrome divides an injected wheel deltaY by the emulated device scale factor,
 // so asking for -120 under dpr 2 makes the page see -60 -- half a real notch.
 const NOTCH = 120 * DPR;
@@ -77,7 +78,7 @@ await send("Page.addScriptToEvaluateOnNewDocument", { source: `
   }
 ` });
 await send("Emulation.setDeviceMetricsOverride",
-  { width: 1500, height: 900, deviceScaleFactor: DPR, mobile: false });
+  { width: innerW, height: innerH, deviceScaleFactor: DPR, mobile: false });
 
 async function load(hash = "") {
   errors.length = 0;
@@ -100,16 +101,21 @@ out.mapIsFullBleed = await ev(`(() => {
   const m = document.getElementById('map').getBoundingClientRect();
   return m.width === innerWidth && m.height === innerHeight;
 })()`);
-out.panelIsMapSibling = await ev(`(() => {
-  const p = document.getElementById('panel');
-  return p.parentElement.id !== 'map' && !p.closest('.leaflet-control');
+out.cardsAreMapSiblings = await ev(`(() => {
+  return ['panel','detail'].every(id => {
+    const el = document.getElementById(id);
+    return el && el.parentElement.id !== 'map' && !el.closest('.leaflet-control');
+  });
 })()`);
+out.panelOnTheRight = await ev(`(() => {
+  const p = document.getElementById('panel').getBoundingClientRect();
+  return { right: Math.round(innerWidth - p.right), left: Math.round(p.left), w: Math.round(p.width) };
+})()`);
+out.detailHiddenAtRest = await ev(`document.getElementById('detail').hidden`);
 out.rowsBuilt = await ev(`document.querySelectorAll('.item').length`);
 out.markersOnMap = await ev(`document.querySelectorAll('.pin').length`);
 out.footNote = await ev(`/total stalls, not live availability/.test(document.querySelector('.foot').textContent)`);
 out.noLegend = await ev(`!document.querySelector('.legend')`);
-out.zoomControlBottomRight =
-  await ev(`!!document.querySelector('.leaflet-bottom.leaflet-right .leaflet-control-zoom')`);
 out.zoomBtnShape = await ev(`(() => {
   const s = getComputedStyle(document.querySelector('.leaflet-control-zoom-in'));
   return s.width + '/' + s.height + ' r=' + s.borderTopLeftRadius;
@@ -117,14 +123,34 @@ out.zoomBtnShape = await ev(`(() => {
 out.attributionPresent = await ev(`/OpenStreetMap/.test(document.body.textContent)`);
 
 // ------------------------------------------- 2. nothing framed under panel --
-const clearOfPanel = `(() => {
-  const p = document.getElementById('panel').getBoundingClientRect();
+// Both cards overlay the map now, so "clear" means clear of whichever are
+// actually on screen -- the panel on the right, the detail card on the left.
+const behind = `(q) => {
+  const hit = (el) => {
+    if (!el || el.hidden) return false;
+    const r = el.getBoundingClientRect();
+    return q.x > r.left && q.x < r.right && q.y > r.top && q.y < r.bottom;
+  };
+  return hit(document.getElementById('panel')) || hit(document.getElementById('detail'));
+}`;
+const clearOfCards = `(() => {
+  const under = ${behind};
   const pts = ICONIC.sites.map(s => __map.latLngToContainerPoint([s.latitude, s.longitude]));
   const onScreen = pts.filter(q => q.x > -40 && q.x < innerWidth + 40 && q.y > -40 && q.y < innerHeight + 40);
-  return { onScreen: onScreen.length,
-           behindPanel: onScreen.filter(q => q.x < p.right && q.y > p.top && q.y < p.bottom).length };
+  return { onScreen: onScreen.length, behindACard: onScreen.filter(under).length };
 })()`;
-out.initialFitClearOfPanel = await ev(clearOfPanel);
+out.initialFitClearOfCards = await ev(clearOfCards);
+// Same test the narrow run does, on the side the panel now occupies.
+out.controlsReachable = await ev(`(() => {
+  const under = ${behind};
+  const mid = (el) => { const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, r: r }; };
+  const z = mid(document.querySelector('.leaflet-control-zoom-in'));
+  const a = mid(document.querySelector('.leaflet-control-attribution'));
+  const onScreen = (q) => q.r.width > 0 && q.r.right <= innerWidth && q.r.bottom <= innerHeight;
+  return { zoom: !under(z) && onScreen(z), attribution: !under(a) && onScreen(a),
+           corner: document.querySelector('.leaflet-control-zoom').parentElement.className };
+})()`);
 
 // ------------------------------------------------------------- 3. search ---
 await type("yosemite"); await frame2();
@@ -189,8 +215,17 @@ await load();
 await ev(`document.querySelector('.item[data-badge="Tesla Diner"]').click(), 1`);
 await sleep(2300);
 out.detailFromRow = {
-  detailShown: await ev(`!document.getElementById('view-detail').hidden`),
-  listHidden: await ev(`document.getElementById('view-list').hidden`),
+  detailShown: await ev(`!document.getElementById('detail').hidden`),
+  // The whole point of this round: the list must survive being selected from.
+  listStillVisible: await ev(`!!document.getElementById('list').offsetParent`),
+  listStillScrollable: await ev(`(() => { const l = document.getElementById('list');
+    return l.scrollHeight > l.clientHeight; })()`),
+  detailAtTopLeft: await ev(`(() => {
+    const d = document.getElementById('detail').getBoundingClientRect();
+    const p = document.getElementById('panel').getBoundingClientRect();
+    return { left: Math.round(d.left), top: Math.round(d.top),
+             clearOfPanel: d.right < p.left };
+  })()`),
   title: await ev(`document.getElementById('d-title').textContent`),
   meta: await ev(`document.getElementById('d-meta').textContent`),
   stats: await ev(`[...document.querySelectorAll('#d-stats .stat')].map(e => e.textContent)`),
@@ -198,27 +233,40 @@ out.detailFromRow = {
   actions: await ev(`[...document.querySelectorAll('#d-actions .btn')].map(e => e.textContent.trim())`),
   primaryHref: await ev(`document.querySelector('#d-actions .btn.primary').getAttribute('href')`),
   teslaHref: await ev(`(document.querySelectorAll('#d-actions .btn')[1]||{}).href || null`),
-  focusMovedToBack: await ev(`document.activeElement.id`),
+  focusMovedToClose: await ev(`document.activeElement.id`),
   hash: await ev(`decodeURIComponent(location.hash)`),
   ariaCurrentRows: await ev(`document.querySelectorAll('.item[aria-current="true"]').length`),
   markerSelected: await ev(`document.querySelectorAll('.pin.is-selected').length`),
   noPopupAnywhere: await ev(`!document.querySelector('.leaflet-popup')`),
-  siteClearOfPanel: await ev(`(() => {
+  // Has to clear BOTH cards now, not just the panel.
+  siteClearOfCards: await ev(`(() => {
+    const under = ${behind};
+    const d = document.getElementById('detail').getBoundingClientRect();
     const p = document.getElementById('panel').getBoundingClientRect();
     const s = ICONIC.sites.find(x => x.badge === 'Tesla Diner');
     const q = __map.latLngToContainerPoint([s.latitude, s.longitude]);
-    return { x: Math.round(q.x), panelRight: Math.round(p.right), clear: q.x > p.right };
+    return { x: Math.round(q.x), gap: [Math.round(d.right), Math.round(p.left)],
+             clear: !under(q) };
   })()`)
 };
 
-await click("#back"); await frame2();
-out.back = {
-  listShown: await ev(`!document.getElementById('view-list').hidden`),
-  detailHidden: await ev(`document.getElementById('view-detail').hidden`),
+await click("#dclose"); await frame2();
+out.close = {
+  listShown: await ev(`!!document.getElementById('list').offsetParent`),
+  detailHidden: await ev(`document.getElementById('detail').hidden`),
   focusReturnedToRow: await ev(`document.activeElement.dataset ? document.activeElement.dataset.badge : null`),
   hashCleared: await ev(`location.hash === ''`),
   pinStaysSelected: await ev(`document.querySelectorAll('.pin.is-selected').length`)
 };
+
+// Escape closes it too.
+await ev(`document.querySelector('.item[data-badge="Waikiki"]').click(), 1`);
+await sleep(2300);
+const escOpen = await ev(`!document.getElementById('detail').hidden`);
+await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+await frame2();
+out.escapeCloses = { wasOpen: escOpen, nowClosed: await ev(`document.getElementById('detail').hidden`) };
 
 // ------------------------------------------------- 6. detail from a pin ----
 await load();
@@ -227,23 +275,23 @@ await ev(`(() => { const els = [...document.querySelectorAll('.pin')];
   t.dispatchEvent(new MouseEvent('click', {bubbles:true})); return 1; })()`);
 await sleep(2300);
 out.detailFromPin = {
-  detailShown: await ev(`!document.getElementById('view-detail').hidden`),
+  detailShown: await ev(`!document.getElementById('detail').hidden`),
   title: await ev(`document.getElementById('d-title').textContent`)
 };
 
 // ------------------------------------------- 7. deep link + multi-site -----
 await load("#Great%20Barrier%20Reef");
 out.deepLink = {
-  detailShown: await ev(`!document.getElementById('view-detail').hidden`),
+  detailShown: await ev(`!document.getElementById('detail').hidden`),
   title: await ev(`document.getElementById('d-title').textContent`),
   siteRows: await ev(`document.querySelectorAll('#d-sites .srow').length`),
   stats: await ev(`[...document.querySelectorAll('#d-stats .stat')].map(e => e.textContent)`),
   currentSite: await ev(`document.querySelector('#d-sites .srow[aria-current="true"] .snm').textContent`),
   factsPointAtIt: await ev(`document.querySelector('#d-facts dd').textContent`),
-  allNineClearOfPanel: await ev(`(() => {
-    const p = document.getElementById('panel').getBoundingClientRect();
+  allNineClearOfCards: await ev(`(() => {
+    const under = ${behind};
     return ICONIC.sites.filter(s => s.badge === 'Great Barrier Reef')
-      .every(s => __map.latLngToContainerPoint([s.latitude, s.longitude]).x > p.right);
+      .every(s => !under(__map.latLngToContainerPoint([s.latitude, s.longitude])));
   })()`)
 };
 await ev(`document.querySelectorAll('#d-sites .srow')[3].click(), 1`);
@@ -251,24 +299,24 @@ await sleep(1700);
 out.deepLink.afterPickingSite4 = {
   current: await ev(`document.querySelector('#d-sites .srow[aria-current="true"] .snm').textContent`),
   factsFollowed: await ev(`document.querySelector('#d-facts dd').textContent`),
-  clearOfPanel: await ev(`(() => {
-    const p = document.getElementById('panel').getBoundingClientRect();
+  clearOfCards: await ev(`(() => {
+    const under = ${behind};
     const nm = document.querySelector('#d-sites .srow[aria-current="true"] .snm').textContent;
     const s = ICONIC.sites.find(x => x.name === nm);
-    return __map.latLngToContainerPoint([s.latitude, s.longitude]).x > p.right;
+    return !under(__map.latLngToContainerPoint([s.latitude, s.longitude]));
   })()`)
 };
 
 // -------------------------------- 8. filtering the selection away ----------
 await load("#Stonehenge");
 out.filterAwaySelection = {
-  detailWasOpen: await ev(`!document.getElementById('view-detail').hidden`)
+  detailWasOpen: await ev(`!document.getElementById('detail').hidden`)
 };
 // Narrow to Asia, which drops Stonehenge (Europe) out of the list entirely.
 await click('.chip[data-region="Asia"]');
 await frame2(); await frame2();
 Object.assign(out.filterAwaySelection, {
-  detailClosed: await ev(`document.getElementById('view-detail').hidden`),
+  detailClosed: await ev(`document.getElementById('detail').hidden`),
   staleAriaCurrent: await ev(`document.querySelectorAll('.item[aria-current="true"]').length`),
   selectedMarkers: await ev(`document.querySelectorAll('.pin.is-selected').length`)
 });
@@ -280,7 +328,7 @@ out.wheelOverPanel = await (async () => {
   await ev(`document.getElementById('list').scrollTop = 0, 1`);
   for (let i = 0; i < 4; i++) {
     await send("Input.dispatchMouseEvent",
-      { type: "mouseWheel", x: 190, y: 520, deltaX: 0, deltaY: NOTCH, buttons: 0 });
+      { type: "mouseWheel", x: innerW - 190, y: 520, deltaX: 0, deltaY: NOTCH, buttons: 0 });
     await sleep(60);
   }
   await sleep(800);
@@ -289,6 +337,22 @@ out.wheelOverPanel = await (async () => {
     mapZoomUnchanged: (await ev(`__map.getZoom()`)) === z0
   };
 })();
+// The detail card is a second sibling overlay -- it must swallow the wheel too.
+out.wheelOverDetail = await (async () => {
+  await load("#Great%20Barrier%20Reef");
+  const z0 = await ev(`__map.getZoom()`);
+  for (let i = 0; i < 4; i++) {
+    await send("Input.dispatchMouseEvent",
+      { type: "mouseWheel", x: 190, y: 520, deltaX: 0, deltaY: NOTCH, buttons: 0 });
+    await sleep(60);
+  }
+  await sleep(800);
+  return {
+    cardScrolled: (await ev(`document.querySelector('#detail .dbody').scrollTop`)) > 0,
+    mapZoomUnchanged: (await ev(`__map.getZoom()`)) === z0
+  };
+})();
+await load();
 out.wheelOverMap = await (async () => {
   const z0 = await ev(`__map.getZoom()`);
   await ev(`(() => { window.__z = []; window.__on = true;
@@ -296,7 +360,7 @@ out.wheelOverMap = await (async () => {
       requestAnimationFrame(t); })(); return 1; })()`);
   for (let i = 0; i < 6; i++) {
     await send("Input.dispatchMouseEvent",
-      { type: "mouseWheel", x: 1100, y: 500, deltaX: 0, deltaY: -NOTCH, buttons: 0 });
+      { type: "mouseWheel", x: 620, y: 500, deltaX: 0, deltaY: -NOTCH, buttons: 0 });
     await sleep(55);
   }
   await sleep(1100);
@@ -335,7 +399,7 @@ await ev(`document.querySelector('.item[data-badge="Stonehenge"]').click(), 1`);
 await sleep(2300);
 out.nearMe.detailShowsDistance =
   await ev(`[...document.querySelectorAll('#d-stats .stat')].map(e => e.textContent)`);
-await click("#back"); await frame2();
+await click("#dclose"); await frame2();
 await click("#near"); await frame2();
 out.nearMe.toggledOff = {
   pressed: await ev(`document.getElementById('near').getAttribute('aria-pressed')`),
@@ -367,7 +431,7 @@ await send("Browser.setPermission",
 // list view would pass trivially -- the blue button is not built until then.
 await load("#Tesla%20Diner");
 out.colourContext = {
-  detailOpen: await ev(`!document.getElementById('view-detail').hidden`),
+  detailOpen: await ev(`!document.getElementById('detail').hidden`),
   primaryButton: await ev(`(() => {
     const b = document.querySelector('.btn.primary'); if (!b) return 'MISSING';
     const s = getComputedStyle(b);
@@ -390,7 +454,7 @@ out.achromaticPanel = await ev(`(() => {
     (el.classList.contains('primary') ||
      (el.classList.contains('ico') && el.closest('[aria-current="true"]')));
   const bad = [];
-  document.querySelectorAll('#panel, #panel *').forEach(el => {
+  document.querySelectorAll('#panel, #panel *, #detail, #detail *').forEach(el => {
     const s = getComputedStyle(el);
     ['color','backgroundColor','borderTopColor','outlineColor'].forEach(p => {
       const ch = chroma(s[p]);
@@ -403,7 +467,7 @@ out.achromaticPanel = await ev(`(() => {
 out.blueUsage = await ev(`(() => {
   // The accent may be a fill or a ring, never coloured text.
   const hits = [];
-  document.querySelectorAll('#panel, #panel *').forEach(el => {
+  document.querySelectorAll('#panel, #panel *, #detail, #detail *').forEach(el => {
     const s = getComputedStyle(el);
     if (/62, 106, 225|91, 130, 240/.test(s.color)) hits.push('TEXT ' + (el.className||el.id));
   });
@@ -421,31 +485,60 @@ out.narrow = {
              spansWidth: p.width > innerWidth * 0.9,
              maxHeightOk: p.height <= innerHeight * 0.7 };
   })()`),
-  siteAboveSheet: await ev(`(() => {
+  // The card overlays the sheet in the same footprint rather than adding a
+  // second one and squeezing the map.
+  detailOverlaysSheet: await ev(`(() => {
+    const d = document.getElementById('detail').getBoundingClientRect();
     const p = document.getElementById('panel').getBoundingClientRect();
+    return { open: !document.getElementById('detail').hidden,
+             sameFootprint: Math.abs(d.left - p.left) < 2 && Math.abs(d.bottom - p.bottom) < 2,
+             onTop: getComputedStyle(document.getElementById('detail')).zIndex >
+                    getComputedStyle(document.getElementById('panel')).zIndex };
+  })()`),
+  siteAboveSheet: await ev(`(() => {
+    const under = ${behind};
     const s = ICONIC.sites.find(x => x.badge === 'Waikiki');
     const q = __map.latLngToContainerPoint([s.latitude, s.longitude]);
-    return { y: Math.round(q.y), sheetTop: Math.round(p.top), clear: q.y < p.top };
+    const d = document.getElementById('detail').getBoundingClientRect();
+    return { y: Math.round(q.y), cardTop: Math.round(d.top), clear: !under(q) };
   })()`),
   consoleClean: errors.length === 0 ? true : errors.slice(0, 3)
 };
+// The pre-existing bug: on a phone the sheet covered the bottom-right corner
+// where both of these live, so neither was reachable and the attribution --
+// which is a licence requirement -- could not be seen at all.
+await click("#dclose"); await frame2();
+out.narrow.controlsReachable = await ev(`(() => {
+  const under = ${behind};
+  const mid = (el) => { const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, r: r }; };
+  const z = mid(document.querySelector('.leaflet-control-zoom-in'));
+  const a = mid(document.querySelector('.leaflet-control-attribution'));
+  const onScreen = (q) => q.r.width > 0 && q.r.top >= 0 && q.r.bottom <= innerHeight;
+  return { zoom: !under(z) && onScreen(z), attribution: !under(a) && onScreen(a),
+           corner: document.querySelector('.leaflet-control-zoom').parentElement.className };
+})()`);
 
 console.log(JSON.stringify(out, null, 1));
 ws.close(); chrome.kill();
 await rm(PROFILE, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
 
 // Expectations, so a future run does not have to re-derive them:
-//   consoleClean true · mapIsFullBleed true · panelIsMapSibling true
-//   rowsBuilt 40 · markersOnMap 53 · initialFitClearOfPanel.behindPanel 0
+//   consoleClean true · mapIsFullBleed true · cardsAreMapSiblings true
+//   panelOnTheRight {right:16, left:1112, w:372} · detailHiddenAtRest true
+//   rowsBuilt 40 · markersOnMap 53 · initialFitClearOfCards.behindACard 0
+//   controlsReachable {zoom:true, attribution:true} on BOTH desktop and narrow
 //   search.visibleRows 1 · searchMatchesSiteName ["Arches"] · noMatch.markers 0
-//   chips.afterDropEurope 27 · afterAll 40
-//   detailFromRow: title "Tesla Diner", focusMovedToBack "back",
-//     ariaCurrentRows 1, markerSelected 1, noPopupAnywhere true, clear true
-//   back.focusReturnedToRow "Tesla Diner" · hashCleared true
-//   deepLink.siteRows 9 · afterPickingSite4 facts follow the picked site
+//   chips: resting All pressed + regions quiet · Europe 13 · +Asia 21 · All 40
+//   detailFromRow: listStillVisible true (the point of the whole round),
+//     detailAtTopLeft.clearOfPanel true, focusMovedToClose "dclose",
+//     ariaCurrentRows 1, markerSelected 1, noPopupAnywhere true,
+//     siteClearOfCards.clear true
+//   close.focusReturnedToRow "Tesla Diner" · hashCleared true · escapeCloses both
+//   deepLink.siteRows 9 · allNineClearOfCards true · site 4 repoints the facts
 //   filterAwaySelection: detailClosed true, staleAriaCurrent 0, selectedMarkers 0
-//   wheelOverPanel: listScrolled true, mapZoomUnchanged true
+//   wheelOverPanel / wheelOverDetail: the card scrolls, map zoom unchanged
 //   wheelOverMap: gained > 0, settledWhole true, continuity.distinct >> 3
 //   nearMe.promptedOnLoad 0 · granted.firstFour starts "Stonehenge" · ascending true
 //   nearMe.denied.msg mentions permission · achromaticPanel [] · blueUsage []
-//   narrow.panelIsBottomSheet all true · siteAboveSheet.clear true
+//   narrow: panelIsBottomSheet all true · detailOverlaysSheet all true

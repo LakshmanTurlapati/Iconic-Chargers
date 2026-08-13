@@ -71,7 +71,7 @@ Whistler (2 each).
 | 🔎 **Search** | badge name, Supercharger name, city, country, why it's badged, or anything in the write-up |
 | 🏷️ **Filter** | `All` plus the four regions, additive |
 | 📍 **Near me** | opt-in — sorts by distance to each badge's *nearest* Supercharger |
-| 🪪 **Detail card** | picking a badge opens a card: stats, why, every Supercharger, coordinates, links |
+| 🪪 **Detail card** | opens opposite the list — stats, why, every Supercharger, coordinates, links. `×` or `Esc` closes |
 | 🔗 **Multi-site** | selecting a badge frames **all** its Superchargers at once |
 | 🔖 **Deep links** | `web/index.html#Great%20Barrier%20Reef` |
 
@@ -86,9 +86,11 @@ an antique gold.
 
 ### Styled after Tesla's navigation UI
 
-The map is the substrate — full-bleed, edge to edge — and the search panel floats on it as a
-rounded, blurred card, the way the car does it. On a narrow screen that panel becomes a bottom
-sheet.
+The map is the substrate — full-bleed, edge to edge — and everything else floats on it as rounded,
+blurred cards, the way the car does it. Search sits on the **right**; picking a badge opens a detail
+card **opposite it, on the left**, so the list keeps its place and its scroll position instead of
+being swapped out from under you. On a narrow screen the panel becomes a bottom sheet and the card
+overlays it in the same footprint, rather than squeezing the map between two sheets.
 
 Three things that reading Tesla's actual conventions changed:
 
@@ -107,11 +109,13 @@ Three things that reading Tesla's actual conventions changed:
   carry no information; `All` is the resting state now, and region chips only light up once a real
   subset is chosen.
 
-The panel is a sibling of the map container, never a child and never a Leaflet control. That is
+Both cards are siblings of the map container, never children and never Leaflet controls. That is
 load-bearing: the wheel handler below is bound to `map.getContainer()`, so a wheel over a sibling
 bubbles to `<body>` and cannot reach the map. Everything the app frames — the initial fit, a badge,
-a single Supercharger — is framed with `paddingTopLeft` for the panel's width, so a selected site
-never lands underneath it.
+a single Supercharger — is padded for whichever cards are actually on screen, so a selected site
+lands in the gap between them and never underneath one. The card therefore has to be *opened before*
+the padding is measured; opening it when the flight lands, as the first version did, measures a card
+that is still hidden and flies the site to exactly the spot it is about to cover.
 
 <div align="center">
 <img src="docs/screenshot-detail.png" alt="The Great Barrier Reef detail card, listing all nine of its Queensland Superchargers, with every one lit on the map" width="88%">
