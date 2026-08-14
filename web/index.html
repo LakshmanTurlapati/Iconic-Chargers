@@ -1259,14 +1259,15 @@ document.addEventListener("DOMContentLoaded", function () {
         constrainedMaxZoom = +zoom;
         return setMaxZoom.call(this, zoom);
       };
-      // Pointer, wheel, keyboard and control-button input all make the current
-      // camera the visitor's choice. A country response arriving afterwards
-      // may still update locale/units, but must never take that camera back.
+      // Pointer, wheel, keyboard and synthesized control clicks all make the
+      // current camera the visitor's choice. A country response arriving
+      // afterwards may still update locale/units, but must never take it back.
       var mapContainer = map.getContainer();
       mapContainer.addEventListener("pointerdown", claimCamera, { passive: true });
       mapContainer.addEventListener("touchstart", claimCamera, { passive: true });
       mapContainer.addEventListener("wheel", claimCamera, { passive: true });
       mapContainer.addEventListener("keydown", claimCamera);
+      mapContainer.addEventListener("click", claimCamera, { capture: true });
     } catch (e) {
       showMapError("webglError");
       map = null;
