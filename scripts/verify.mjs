@@ -1738,6 +1738,13 @@ async function ipLocaleScenario(tag, languages, country, settle = 80) {
   await ev(`localStorage.removeItem('iconic.locale.v1'); sessionStorage.clear()`);
   await load("", localeURL(tag, languages, country));
   await sleep(settle);
+  // Country framing can land before the newly visible vector tiles finish
+  // loading. Wait for both signals so the health snapshot does not mistake
+  // normal post-flight source work for an unloaded application.
+  for (let i = 0; i < 40; i++) {
+    if (await ev(`!__map.isMoving() && __map.isStyleLoaded()`)) break;
+    await sleep(100);
+  }
   const sourceCountry = ({ US:"USA", CA:"Canada", HK:"Hong Kong", IT:"Italy", BR:"Brazil" })[country];
   const result = await ev(`(() => {
     const countrySites = ICONIC.sites.filter(s => s.country === ${JSON.stringify(sourceCountry)});
@@ -1849,6 +1856,8 @@ out.countryFocusGuards = {
   badge: await delayedCountryGuard("badge",
     `document.querySelector('.item[data-badge="Tesla Diner"]').click()`),
   deepLink: await delayedCountryGuard("deep-link", null, "Tesla Diner"),
+  controlClick: await delayedCountryGuard("control-click",
+    `document.querySelector('.maplibregl-ctrl-zoom-in').click()`),
   map: await delayedCountryGuard("map", `(() => {
     __map.getCanvas().dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerType:'mouse'}));
     __map.jumpTo({center:[12,5],zoom:__map.getMinZoom()+1.25});
@@ -2656,6 +2665,10 @@ check(Math.abs(out.countryFocusGuards.map.camera.center[0] - 12) < 1e-6 &&
   Math.abs(out.countryFocusGuards.map.camera.zoom -
     (out.countryFocusGuards.map.camera.minZoom + 1.25)) < 1e-6,
   "countryFocusGuards.map must retain the user camera", out.countryFocusGuards.map);
+check(Math.abs(out.countryFocusGuards.controlClick.camera.zoom -
+    (out.countryFocusGuards.controlClick.camera.minZoom + 1)) < 1e-6,
+  "countryFocusGuards.controlClick must retain the click-only control zoom",
+  out.countryFocusGuards.controlClick);
 for (const [name, guard] of Object.entries(out.countryPanelGuards)) {
   const before = guard.before.camera;
   const final = guard.final;
